@@ -1,8 +1,8 @@
 # GoTask 发布与运维手册
 
-> 状态：G1 仓库侧 GoTask/Stack 契约已生成并完成静态验证；G2/G3 未授权、未部署
+> 状态：G1/G2 已通过；G3 已授权并进入本地实施，G4 未授权
 > 适用范围：Sub2API Docker Swarm 本地 ARM64 验证与后续 AMD64 生产环境
-> 基线日期：2026-07-26（Asia/Shanghai）
+> 基线日期：2026-07-27（Asia/Shanghai）
 
 ## 1. 目的与边界
 
@@ -35,6 +35,8 @@ GoTask 不是长驻运维平台，不承担：
 | `node3` | `192.168.252.4` | `linux/arm64` | Caddy + Sub2API |
 
 本地节点每台 4G 内存，仅使用缩小资源档验证功能、调度和限额语义，不用于推导生产容量。节点详细信息见 [`Multipass-Nodes.md`](./Multipass-Nodes.md)。
+
+镜像平台名与 Swarm 节点字段分开记录：本地镜像使用 `TARGET_ARCH=arm64`，Docker 29.6.1 节点 placement 使用运行态值 `SWARM_NODE_ARCH=aarch64`；不得把镜像 tag 名直接当作 Swarm constraint 值。
 
 ### 2.2 环境参数
 
@@ -152,7 +154,7 @@ tasks:
       - ./scripts/validate-stack.sh "{{.ENV}}"
 ```
 
-G1 已按上述契约创建根 Taskfile 和三个子 Taskfile；当前校验逻辑直接在 Taskfile 中表达，因此没有创建 `scripts/`。这些命令已经可用于静态检查，但在取得 G2/G3、回填固定 digest 并创建外部 Config/Secret 前，不能执行实际部署。
+G1 已按上述契约创建根 Taskfile 和三个子 Taskfile；当前校验逻辑直接在 Taskfile 中表达，因此没有创建 `scripts/`。G2 已回填固定 digest；G3 实施仍须先创建外部 Config/Secret 并通过环境校验。
 
 ## 5. 首次部署服务
 
@@ -176,45 +178,37 @@ cd deploy/cluster
 task validate:environment ENV=local
 task validate:stack ENV=local
 task release:plan ENV=local RELEASE=v0.1.165-ext.1
-task release:bootstrap ENV=local CONFIRM=bootstrap-sub2api
 task release:apply ENV=local RELEASE=v0.1.165-ext.1
+task release:bootstrap ENV=local CONFIRM=bootstrap-sub2api
+# bootstrap 成功后，人工给 node1 添加 sub2api=true/caddy=true label
 task release:verify ENV=local
 task ops:status
 ```
 
 命令语义如下：
 
-1. `validate:environment` 校验 Docker context、Swarm 身份、节点架构、label、网络和必要对象；
+1. `validate:environment` 校验 Docker context、Swarm 身份、节点架构、数据服务 label、网络和必要对象；bootstrap 前允许尚无应用 label；
 2. `validate:stack` 渲染并校验 Stack，检查固定 digest、资源约束、placement 和 Config/Secret 引用；
 3. `release:plan` 只展示将要变更的 image digest、Config/Secret 版本和 service，不执行修改；
-4. `release:bootstrap` 仅用于全新数据库，必须显式确认，后续更新不得再次调用；
-5. `release:apply` 执行 `docker stack deploy` 并等待滚动更新进入稳定状态；
-6. `release:verify` 从每个节点的本机 Caddy 入口检查当前环境声明的 `SUB2API_HEALTH_PATH`，并核对实际运行的 digest、Config/Secret 和 placement；阶段 2 为 `/health`，阶段 3 readiness 验证后切换为 `/ready`。
+4. 首次 `release:apply` 在尚无 `sub2api/caddy` label 时创建完整期望状态，但只调度 PostgreSQL/Redis；不另建第二套 Stack；
+5. `release:bootstrap` 仅用于全新数据库，必须显式确认；成功后删除临时 service 和一次性管理员密码 Secret，后续更新不得再次调用；
+6. bootstrap 成功后只给 `node1` 添加应用 label，Swarm 才调度正式 Sub2API/Caddy；
+7. `release:verify` 先从 node1 回环 Caddy Admin API 导出 Local CA，再只访问 `ACTIVE_NODE_ADDRESSES`，并核对 digest、Config/Secret、placement 和当前 desired-state task 数；阶段 2 为 `/health`，阶段 3 readiness 验证后切换为 `/ready`。历史 Failed/Rejected task 保留在 Swarm 事件中用于追踪，但恢复后不永久阻断当前态验收。
 
 数据库 migration 仍由 Sub2API 启动过程执行，并通过 PostgreSQL advisory lock 串行化。第一期不新增独立 migration service/job，以避免引入额外实体；`bootstrap` 只负责全新数据库的首次初始化控制，不替代应用自身 migration。
 
 ### 5.3 本地逐节点验证
 
-在尚未取得 G3、不能执行 `release:verify` 前，可使用下列命令说明逐节点验证的等价语义。以下证书路径仍是部署后待确定的占位符：
+阶段 2 仅验证 node1。`release:verify` 会把 Caddy Local CA 导出到 `CADDY_LOCAL_CA_FILE`；等价的手工验证为：
 
 ```bash
 curl --noproxy '*' \
   --resolve sub2api.test:443:192.168.252.2 \
-  --cacert <caddy-local-ca.pem> \
-  https://sub2api.test/health
-
-curl --noproxy '*' \
-  --resolve sub2api.test:443:192.168.252.3 \
-  --cacert <caddy-local-ca.pem> \
-  https://sub2api.test/health
-
-curl --noproxy '*' \
-  --resolve sub2api.test:443:192.168.252.4 \
-  --cacert <caddy-local-ca.pem> \
+  --cacert /home/ubuntu/.local/share/sub2api/caddy-local-ca.pem \
   https://sub2api.test/health
 ```
 
-上述命令对应阶段 2 的现有路由；阶段 3 合入 ext readiness 后将路径替换为 `/ready`。只检查 `docker service ls` 不足以判定发布成功；必须验证每个节点的真实入口、运行版本和共享依赖。
+阶段 4 启用 node2/node3 后，再把两个地址加入 `ACTIVE_NODE_ADDRESSES` 并逐节点验证。阶段 3 合入 ext readiness 后将路径替换为 `/ready`。只检查 `docker service ls` 不足以判定发布成功；必须验证当前活动节点的真实入口、运行版本和共享依赖。
 
 ## 6. 更新与回滚
 
@@ -246,6 +240,8 @@ task ops:logs SERVICE=sub2api
 ### 6.2 更新模型价格等配置
 
 模型价格缓存属于配置更新，不要求重新构建应用镜像。建议创建新的版本化 Swarm Config，更新 service 对 Config 的引用，再沿用相同的 `plan -> apply -> verify` 流程触发滚动更新。因为运行中的容器不会自动获取新 Config，仍需要替换相关 Sub2API task，但不需要全局停服。
+
+本地第一期使用 fork 内已审计快照创建 Config，并把 `pricing.remote_url`/`hash_url` 置空，避免为本地验证额外建立远程价格发布点；生产准入时仍须给生产快照配置匹配的不可变远程 URL/hash。
 
 ### 6.3 回滚
 

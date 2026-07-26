@@ -23,7 +23,7 @@ tasks:
         echo "environment=$ENVIRONMENT"
         echo "stack=$STACK_NAME"
         echo "release=$SUB2API_RELEASE"
-        echo "fork_commit=$(git -C '{{.ROOT_DIR}}/../..' rev-parse HEAD)"
+        echo "fork_commit=$SUB2API_IMAGE_COMMIT"
         echo "sub2api_image=$SUB2API_IMAGE"
         echo "caddy_image=$CADDY_IMAGE"
         echo "postgres_image=$POSTGRES_IMAGE"
@@ -69,23 +69,45 @@ tasks:
     cmds:
       - task --dir "{{.ROOT_DIR}}" validate:environment ENV="{{.ENV}}"
       - |
+        if [ "{{.ENV}}" = local ]; then
+          task --dir "{{.ROOT_DIR}}" release:export-local-ca ENV=local
+        fi
+      - |
         set -a
         . "{{.ENV_FILE}}"
         set +a
         for component in sub2api caddy postgres redis; do
           service_name="${STACK_NAME}_${component}"
           docker --context "$DOCKER_CONTEXT" service inspect "$service_name" >/dev/null
-          if docker --context "$DOCKER_CONTEXT" service ps "$service_name" --no-trunc | grep -Eq 'Failed|Rejected'; then
-            exit 1
-          fi
         done
 
         actual_sub2api_image=$(docker --context "$DOCKER_CONTEXT" service inspect --format '{{"{{.Spec.TaskTemplate.ContainerSpec.Image}}"}}' "${STACK_NAME}_sub2api")
         actual_caddy_image=$(docker --context "$DOCKER_CONTEXT" service inspect --format '{{"{{.Spec.TaskTemplate.ContainerSpec.Image}}"}}' "${STACK_NAME}_caddy")
+        actual_postgres_image=$(docker --context "$DOCKER_CONTEXT" service inspect --format '{{"{{.Spec.TaskTemplate.ContainerSpec.Image}}"}}' "${STACK_NAME}_postgres")
+        actual_redis_image=$(docker --context "$DOCKER_CONTEXT" service inspect --format '{{"{{.Spec.TaskTemplate.ContainerSpec.Image}}"}}' "${STACK_NAME}_redis")
         test "$actual_sub2api_image" = "$SUB2API_IMAGE"
         test "$actual_caddy_image" = "$CADDY_IMAGE"
+        test "$actual_postgres_image" = "$POSTGRES_IMAGE"
+        test "$actual_redis_image" = "$REDIS_IMAGE"
 
-        for address in $NODE_ADDRESSES; do
+        expected_app_tasks=$(printf '%s\n' $ACTIVE_NODE_ADDRESSES | sed '/^$/d' | wc -l | tr -d ' ')
+        test "$expected_app_tasks" -ge 1
+        for component in sub2api caddy; do
+          running_tasks=$(docker --context "$DOCKER_CONTEXT" service ps \
+            --filter desired-state=running \
+            --format '{{"{{.CurrentState}}"}}' \
+            "${STACK_NAME}_${component}" | grep -c '^Running ' || true)
+          test "$running_tasks" -eq "$expected_app_tasks"
+        done
+        for component in postgres redis; do
+          running_tasks=$(docker --context "$DOCKER_CONTEXT" service ps \
+            --filter desired-state=running \
+            --format '{{"{{.CurrentState}}"}}' \
+            "${STACK_NAME}_${component}" | grep -c '^Running ' || true)
+          test "$running_tasks" -eq 1
+        done
+
+        for address in $ACTIVE_NODE_ADDRESSES; do
           if [ "$ENVIRONMENT" = local ]; then
             test -r "$CADDY_LOCAL_CA_FILE"
             curl --noproxy '*' --fail --silent --show-error \
@@ -98,6 +120,34 @@ tasks:
               "https://$SUB2API_DOMAIN$SUB2API_HEALTH_PATH" >/dev/null
           fi
         done
+
+  export-local-ca:
+    desc: Export the local Caddy root CA on the node1 manager before TLS verification
+    requires:
+      vars:
+        - name: ENV
+          enum: [local]
+    vars:
+      ENV_FILE: '{{.ROOT_DIR}}/env/local-arm64/cluster.env'
+    cmds:
+      - |
+        set -a
+        . "{{.ENV_FILE}}"
+        set +a
+        test "$(hostname)" = node1
+        docker --context "$DOCKER_CONTEXT" service inspect "${STACK_NAME}_caddy" >/dev/null
+        ca_dir=$(dirname "$CADDY_LOCAL_CA_FILE")
+        install -d -m 0700 "$ca_dir"
+        ca_tmp=$(mktemp "$ca_dir/caddy-local-ca.XXXXXX")
+        trap 'rm -f "$ca_tmp"' EXIT
+        curl --noproxy '*' --fail --silent --show-error \
+          http://127.0.0.1:2019/pki/ca/local \
+          | python3 -c 'import json, sys; sys.stdout.write(json.load(sys.stdin)["root_certificate"])' \
+          > "$ca_tmp"
+        openssl x509 -in "$ca_tmp" -noout -subject -fingerprint -sha256 >/dev/null
+        chmod 0600 "$ca_tmp"
+        mv "$ca_tmp" "$CADDY_LOCAL_CA_FILE"
+        trap - EXIT
 
   rollback:
     desc: Re-apply a reviewed previous manifest and verify it
@@ -146,6 +196,7 @@ tasks:
 
         docker --context "$DOCKER_CONTEXT" service create \
           --detach=true \
+          --with-registry-auth \
           --name "$bootstrap_service" \
           --constraint node.labels.postgres==true \
           --network "$APP_NETWORK_NAME" \
@@ -175,10 +226,12 @@ tasks:
             export REDIS_PASSWORD=$(cat /run/secrets/redis_app_password)
             export ADMIN_PASSWORD=$(cat /run/secrets/bootstrap_admin_password)
             export JWT_SECRET=$(sed -n "/^jwt:/,/^[^[:space:]]/ s/^[[:space:]]*secret:[[:space:]]*\"\([^\"]*\)\".*/\1/p" /run/secrets/bootstrap_app_config)
+            export TOTP_ENCRYPTION_KEY=$(sed -n "/^totp:/,/^[^[:space:]]/ s/^[[:space:]]*encryption_key:[[:space:]]*\"\([^\"]*\)\".*/\1/p" /run/secrets/bootstrap_app_config)
             test -n "$DATABASE_PASSWORD"
             test -n "$REDIS_PASSWORD"
             test -n "$ADMIN_PASSWORD"
             test -n "$JWT_SECRET"
+            test -n "$TOTP_ENCRYPTION_KEY"
             exec /app/sub2api
           '
 

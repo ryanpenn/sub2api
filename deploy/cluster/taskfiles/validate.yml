@@ -24,14 +24,27 @@ tasks:
 
         manager_count=$(docker --context "$DOCKER_CONTEXT" node ls --filter role=manager -q | wc -l | tr -d ' ')
         test "$manager_count" -eq 3
-        docker --context "$DOCKER_CONTEXT" node ls --filter role=manager | awk 'NR > 1 && $3 != "Ready" {exit 1}'
+        manager_ids=$(docker --context "$DOCKER_CONTEXT" node ls --filter role=manager -q)
+        leader_count=0
+        for node_id in $manager_ids; do
+          manager_state=$(docker --context "$DOCKER_CONTEXT" node inspect --format '{{"{{.Status.State}}"}}' "$node_id")
+          manager_reachability=$(docker --context "$DOCKER_CONTEXT" node inspect --format '{{"{{.ManagerStatus.Reachability}}"}}' "$node_id")
+          manager_leader=$(docker --context "$DOCKER_CONTEXT" node inspect --format '{{"{{.ManagerStatus.Leader}}"}}' "$node_id")
+          manager_architecture=$(docker --context "$DOCKER_CONTEXT" node inspect --format '{{"{{.Description.Platform.Architecture}}"}}' "$node_id")
+          test "$manager_state" = ready
+          test "$manager_reachability" = reachable
+          test "$manager_architecture" = "$SWARM_NODE_ARCH"
+          if [ "$manager_leader" = true ]; then
+            leader_count=$((leader_count + 1))
+          fi
+        done
+        test "$leader_count" -eq 1
 
         for label in sub2api caddy; do
           node_ids=$(docker --context "$DOCKER_CONTEXT" node ls --filter "node.label=$label=true" -q)
-          test -n "$node_ids"
           for node_id in $node_ids; do
             architecture=$(docker --context "$DOCKER_CONTEXT" node inspect --format '{{"{{.Description.Platform.Architecture}}"}}' "$node_id")
-            test "$architecture" = "$TARGET_ARCH"
+            test "$architecture" = "$SWARM_NODE_ARCH"
           done
         done
 
@@ -82,6 +95,7 @@ tasks:
         zero_digest='sha256:0000000000000000000000000000000000000000000000000000000000000000'
         for image in "$SUB2API_IMAGE" "$CADDY_IMAGE" "$POSTGRES_IMAGE" "$REDIS_IMAGE"; do
           printf '%s\n' "$image" | grep -Eq '@sha256:[0-9a-f]{64}$'
+          case "$rendered" in *"image: $image"*) ;; *) exit 1 ;; esac
           case "$image" in
             *"$zero_digest")
               echo "Image digest is still a G1 sentinel: $image" >&2
@@ -92,6 +106,7 @@ tasks:
 
         expected_version="$(tr -d '\r\n' < "{{.ROOT_DIR}}/../../backend/cmd/server/VERSION")-$(tr -d '\r\n' < "{{.ROOT_DIR}}/../../backend/extends/VERSION")"
         test "$SUB2API_RELEASE" = "v$expected_version"
+        printf '%s\n' "$SUB2API_IMAGE_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
         case "$SUB2API_IMAGE" in *":$SUB2API_RELEASE-$TARGET_ARCH@"*) ;; *) exit 1 ;; esac
         case "$CADDY_IMAGE" in *"-$TARGET_ARCH@"*) ;; *) exit 1 ;; esac
 
@@ -99,6 +114,14 @@ tasks:
         pricing_hash=$(shasum -a 256 "{{.ROOT_DIR}}/$MODEL_PRICING_SOURCE" | awk '{print substr($1, 1, 12)}')
         case "$CADDYFILE_CONFIG" in *"-$caddy_hash") ;; *) exit 1 ;; esac
         case "$MODEL_PRICING_CONFIG" in *"-$pricing_hash") ;; *) exit 1 ;; esac
+
+        if [ "{{.ENV}}" = local ]; then
+          if grep -Eq '__REVIEWED_LOCAL_IMAGE_CONCURRENCY__|__PINNED_MODEL_PRICING_(URL|HASH_URL)__' \
+            "{{.ROOT_DIR}}/env/local-arm64/app-config.yaml.example"; then
+            echo 'Local app-config still contains unresolved deployment decisions' >&2
+            exit 1
+          fi
+        fi
 
         for object_name in \
           "$APP_CONFIG_SECRET" \

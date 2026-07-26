@@ -2,7 +2,7 @@ version: '3.9'
 
 services:
   sub2api:
-    image: ${SUB2API_IMAGE:?SUB2API_IMAGE must use a platform-specific digest}
+    image: ${SUB2API_IMAGE:?required}
     environment:
       AUTO_SETUP: 'false'
       DATA_DIR: /app/data
@@ -30,7 +30,7 @@ services:
     networks:
       - app
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080${SUB2API_HEALTH_PATH:?SUB2API_HEALTH_PATH is required}"]
+      test: ["CMD", "wget", "-q", "-T", "3", "-O", "/dev/null", "http://127.0.0.1:8080${SUB2API_HEALTH_PATH:?SUB2API_HEALTH_PATH is required}"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -41,7 +41,7 @@ services:
       placement:
         constraints:
           - node.labels.sub2api == true
-          - node.platform.arch == ${TARGET_ARCH:?TARGET_ARCH is required}
+          - node.platform.arch == ${SWARM_NODE_ARCH:?SWARM_NODE_ARCH is required}
       resources:
         reservations:
           memory: ${SUB2API_MEMORY_RESERVATION:?SUB2API_MEMORY_RESERVATION is required}
@@ -66,7 +66,7 @@ services:
         window: 60s
 
   caddy:
-    image: ${CADDY_IMAGE:?CADDY_IMAGE must use a platform-specific digest}
+    image: ${CADDY_IMAGE:?required}
     environment:
       CADDY_REDIS_ADDRESS: ${CADDY_REDIS_ADDRESS:?CADDY_REDIS_ADDRESS is required}
       CADDY_REDIS_USERNAME: caddy_tls
@@ -92,7 +92,7 @@ services:
       placement:
         constraints:
           - node.labels.caddy == true
-          - node.platform.arch == ${TARGET_ARCH:?TARGET_ARCH is required}
+          - node.platform.arch == ${SWARM_NODE_ARCH:?SWARM_NODE_ARCH is required}
       resources:
         reservations:
           memory: ${CADDY_MEMORY_RESERVATION:?CADDY_MEMORY_RESERVATION is required}
@@ -117,7 +117,7 @@ services:
         window: 60s
 
   postgres:
-    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE must use a platform-specific digest}
+    image: ${POSTGRES_IMAGE:?required}
     environment:
       PGDATA: /var/lib/postgresql/data
       POSTGRES_USER: sub2api
@@ -144,7 +144,7 @@ services:
       placement:
         constraints:
           - node.labels.postgres == true
-          - node.platform.arch == ${TARGET_ARCH:?TARGET_ARCH is required}
+          - node.platform.arch == ${SWARM_NODE_ARCH:?SWARM_NODE_ARCH is required}
       resources:
         reservations:
           memory: ${POSTGRES_MEMORY_RESERVATION:?POSTGRES_MEMORY_RESERVATION is required}
@@ -157,7 +157,7 @@ services:
         window: 60s
 
   redis:
-    image: ${REDIS_IMAGE:?REDIS_IMAGE must use a platform-specific digest}
+    image: ${REDIS_IMAGE:?required}
     entrypoint:
       - /bin/sh
       - -ec
@@ -168,16 +168,16 @@ services:
         test -n "$$app_password"
         test -n "$$caddy_password"
         printf 'user default off\nuser sub2api on >%s ~* &* +@all\nuser caddy_tls on >%s ~sub2api-caddy-tls ~sub2api-caddy-tls/* +@all\n' \
-          "$$app_password" "$$caddy_password" > /run/redis/users.acl
-        exec redis-server \
-          --aclfile /run/redis/users.acl \
+          "$$app_password" "$$caddy_password" > /tmp/users.acl
+        chown redis:redis /tmp/users.acl
+        chmod 0600 /tmp/users.acl
+        exec docker-entrypoint.sh redis-server \
+          --aclfile /tmp/users.acl \
           --save 60 1 \
           --appendonly yes \
           --appendfsync everysec
     volumes:
       - redis_data:/data
-    tmpfs:
-      - /run/redis
     secrets:
       - source: redis_app_password
         target: /run/secrets/redis_app_password
@@ -204,7 +204,7 @@ services:
       placement:
         constraints:
           - node.labels.redis == true
-          - node.platform.arch == ${TARGET_ARCH:?TARGET_ARCH is required}
+          - node.platform.arch == ${SWARM_NODE_ARCH:?SWARM_NODE_ARCH is required}
       resources:
         reservations:
           memory: ${REDIS_MEMORY_RESERVATION:?REDIS_MEMORY_RESERVATION is required}

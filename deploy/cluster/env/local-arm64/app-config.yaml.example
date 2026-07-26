@@ -31,14 +31,15 @@ totp:
 gateway:
   image_concurrency:
     enabled: true
-    max_concurrent_requests: __REVIEWED_LOCAL_IMAGE_CONCURRENCY__
+    max_concurrent_requests: 1
     overflow_mode: "reject"
     wait_timeout_seconds: 30
     max_waiting_requests: 100
 
 pricing:
-  remote_url: "__PINNED_MODEL_PRICING_URL__"
-  hash_url: "__PINNED_MODEL_PRICING_HASH_URL__"
+  # 本地第一期只使用版本化 Swarm Config；不启用远程价格同步。
+  remote_url: ""
+  hash_url: ""
   data_dir: "/app/data/model-pricing"
   fallback_file: "/app/data/model-pricing/model_pricing.json"
   update_interval_hours: 24

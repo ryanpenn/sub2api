@@ -1,6 +1,6 @@
 # Sub2API 多节点部署方案
 
-> 状态：本地验证方案设计与阶段 0 已完成，阶段 1 的 G1/G2 已通过；G3 未授权、未执行；生产容量细项与生产监控目标按生产准入门槛后续补齐
+> 状态：本地验证方案设计与阶段 0 已完成，G1/G2 已通过；G3 已授权并执行中，G4 未授权；生产容量细项与生产监控目标按生产准入门槛后续补齐
 > 创建日期：2026-07-26  
 > 更新日期：2026-07-26  
 > 节点信息来源：[`Multipass-Nodes.md`](./Multipass-Nodes.md)  
@@ -148,7 +148,7 @@
 | 应用发布与原地更新 | 已确认 | Sub2API 容器视为不可变制品，只通过固定镜像 digest 和 Swarm 更新/回滚；Caddy 阻断在线更新检查、可回滚版本查询、原地更新和原地回滚入口，只保留 `GET /api/v1/admin/system/version` 展示完整 fork 版本；不修改源码、不增加开关 |
 | 配置中心 | 已确认不引入 | 当前三节点、低频配置变更场景使用 Docker Swarm Config/Secret 即可；不新增独立配置中心及其客户端监听、认证、备份和高可用体系 |
 | 多节点配置分发 | 已确认 | Caddyfile 使用版本化 Swarm Config；Sub2API `config.yaml` 使用版本化 Swarm Secret；敏感参数只进入 Secret，配置通过创建新版本并滚动更新，不共享可写文件 |
-| 模型价格快照 | 已确认 | 经审计的 `model_pricing.json` 使用版本化 Swarm Config，只读挂载到三个副本；远程数据和 hash URL 固定到与快照一致的不可变上游 revision，不跟随 `main` 漂移 |
+| 模型价格快照 | 已确认 | 经审计的 `model_pricing.json` 使用版本化 Swarm Config，只读挂载到三个副本；本地第一期关闭远程同步，仅使用该 Config；生产准入时远程数据和 hash URL 必须固定到与快照一致的不可变上游 revision，不跟随 `main` 漂移 |
 | 模型价格更新 | 已确认 | 创建新价格 Config 并更新 service 引用；无需重建应用镜像，以 `parallelism: 1`、`order: stop-first` 和 `failure_action: pause` 更新，发布流程逐副本验证 `/ready` |
 | 滚动更新可用性 | 已确认边界 | 不整体停服，通常仍有另外两个副本提供集群容量；但本机 Caddy 不跨节点转发且当前不做 DNS 摘除，被更新节点存在短暂请求失败或重连窗口，不承诺逐节点零中断 |
 | 扩展代码目录 | 已建立元数据边界 | fork 根目录 `backend/extends` 已创建，当前仅含非运行时 `VERSION`；多实例安全运行时修补尚未实施 |
@@ -539,7 +539,7 @@ sudo killall -HUP mDNSResponder
 10. `NeedsSetup()` 只检查当前节点本地的 `config.yaml` 和 `.installed`；三个独立文件系统会同时判定需要 setup。`AUTO_SETUP` 还会在未显式指定时分别生成 JWT Secret，而管理员创建采用“先查询、再插入”，并发执行可能造成配置漂移和部分副本因唯一约束失败。已确认仅允许一个临时受控实例执行一次 `AUTO_SETUP`，显式提供 `ADMIN_PASSWORD`、JWT/TOTP Secret；成功后关闭该实例。正式副本统一只读挂载同一版本化 `config.yaml` Swarm secret、设置 `AUTO_SETUP=false`，新增节点只挂载现有 Secret，不重新 setup。
 11. migration 后的数据库内 bootstrap 继续复用现有幂等/唯一约束语义并执行三副本验证：JWT bootstrap 通过唯一键和 `ON CONFLICT DO NOTHING` 收敛，Simple Mode 默认分组将并发唯一约束冲突视为已完成；不为这些步骤新增协调实体。
 12. 管理端 `POST /api/v1/admin/system/update` 和 `POST /api/v1/admin/system/rollback` 会修改当前副本的可执行文件及本地 `.backup`，在 Swarm 中只会改变一个副本、容器重建后丢失，并绕过镜像 digest；现有版本比较还会把 `0.1.165-ext.1` 的 patch 段解析失败并退化为 `0`，使上游更新检查和可回滚版本筛选产生错误结果。已确认由每节点 Caddy 阻断 `GET /api/v1/admin/system/check-updates`、`GET /api/v1/admin/system/rollback-versions` 及两个原地更新/回滚写接口，只保留 `GET /api/v1/admin/system/version` 展示完整 fork 版本；Sub2API 端口不对测试入口直接发布，防止绕过 Caddy。不为在线更新兼容性修改应用源码，不新增功能开关。
-13. pricing cache 当前由每个副本独立从远程检查 hash 并更新内存及本地文件，没有本地文件变更监听；直接使用可变的上游 `main` 会造成副本短暂不一致，手工改本地文件也不能可靠热加载。已确认在部署层改用经审计、带内容摘要的 `model_pricing.json` Swarm Config，只读挂载到三个副本，并将 `pricing.remote_url`/`pricing.hash_url` 固定到与快照一致的不可变上游 revision。正常轮询继续保留但不会跟随分支漂移；更新价格时创建新 Config 并滚动更新 service，不修改价格服务代码、不共享可写目录、不新增实体。
+13. pricing cache 当前由每个副本独立从远程检查 hash 并更新内存及本地文件，没有本地文件变更监听；直接使用可变的上游 `main` 会造成副本短暂不一致，手工改本地文件也不能可靠热加载。已确认在部署层改用经审计、带内容摘要的 `model_pricing.json` Swarm Config，只读挂载到三个副本。本地第一期将 `pricing.remote_url`/`pricing.hash_url` 置空，只验证不可变 Config；生产准入时再固定到与生产快照一致的不可变上游 revision。更新价格时创建新 Config 并滚动更新 service，不修改价格服务代码、不共享可写目录、不新增实体。
 14. 还需继续盘点自定义页面/静态覆盖、调试日志和临时文件等本地文件边界。
 
 以上是扩容评审项，不直接等同于已确认缺陷；最终结论需要由双副本、三副本测试和故障演练支持。
@@ -1492,7 +1492,7 @@ task ops:node-status
 32. **本地可观测性（已确认）**：第一期不部署 Prometheus/Grafana/Loki 等常驻组件；使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据和 PostgreSQL/Redis 原生查询，以 `request_id + node + replica` 关联链路，由 GoTask 提供只读状态、日志和采样命令并形成验收记录。生产指标后端、日志集中化、保留期、告警阈值、值班和升级流程纳入生产准入前的“容量与可观测性补充方案”，当前不预设技术选型。
 33. **Swarm 节点角色（已确认）**：`node1`、`node2`、`node3` 固定作为 manager 并保留 worker 能力，以维持三个 manager 的 quorum 并演练单 manager 故障；后续容量扩展节点全部只作为 worker 加入，不把 manager 扩展到 3 个以上。原 manager 永久失效时从合格 worker 中晋升替代节点，只恢复到三个 manager。
 34. **实施产物（已完成 G2）**：ARM64/AMD64 最终平台镜像 digest 已回填，发布 tag、fork commit、架构 digest、multi-arch digest 与 workflow run 可追溯。
-35. **下一步授权**：本地设计与 G1/G2 已完成并通过；下一步单独决定是否授权 G3 修改本地节点。G2 不隐含 G3，当前未授权 G3。
+35. **当前授权**：本地设计与 G1/G2 已完成并通过，G3 已单独授权用于三个本地节点实施；G3 不隐含 G4，当前不得执行故障注入。
 
 ## 10. 计划产物
 
@@ -1577,13 +1577,13 @@ task ops:node-status
 | 2026-07-26 | 后台任务按失败证据治理 | 已确认证据门槛 | Account/Proxy expiry 验证通过即不改；Scheduled Test 重复执行失败测试成立时才复用 Redis leader lock 与 PostgreSQL advisory lock 回退；不新增 leader 实体、facade 或调度框架 |
 | 2026-07-26 | 代码修补与集群配置分目录存放 | G1 已实施 | `backend/extends` 当前仅存 fork VERSION；`deploy/cluster` 已存放 Stack、Caddy、双环境模板和 GoTask 契约，未混入业务修补代码 |
 | 2026-07-26 | 使用 GoTask 作为薄发布/运维入口 | G1 已实施并静态验证 | 位于 `deploy/cluster`，只编排 `validate/release/ops` 和受控 bootstrap；未创建空脚本、未引入新控制面/实体，也未采用参考项目的 Traefik、Docker Socket、local ACME volume 或可变 tag |
-| 2026-07-26 | 收敛 G2 发布面但不执行发布 | G1 已通过 | Sub2API/Caddy 仅保留手工 private GHCR digest-first 发布，任何 push 前检查已有 package 为 private 或确认尚不存在，push 后再次检查 private；GoReleaser 不含 registry publisher；不创建 GitHub Release、不发布 Docker Hub、不发送通知、不使用可变 tag；G2/G3 仍未授权 |
+| 2026-07-26 | 收敛 G2 发布面但不执行发布 | 当时 G1 已通过 | Sub2API/Caddy 仅保留手工 private GHCR digest-first 发布，任何 push 前检查已有 package 为 private 或确认尚不存在，push 后再次检查 private；GoReleaser 不含 registry publisher；不创建 GitHub Release、不发布 Docker Hub、不发送通知、不使用可变 tag；该决策形成时 G2/G3 尚未授权，后续已分别授权 |
 | 2026-07-26 | 发布 G2 不可变双架构制品 | G2 已通过 | annotated tag 固定到 G1 闭环提交；Sub2API/Caddy private GHCR workflow 成功并回填两平台及 multi-arch digest；PostgreSQL/Redis 固定平台 digest；未访问节点、未执行 G3 |
 | 2026-07-26 | 原项目遵循最小改动且新增文件优先 | 已确认 | 修改已有文件只允许保留必要的薄接入逻辑 |
 | 2026-07-26 | 并发槽采用原文件直接最小修补 | 已确认 | 删除 `internal/service/wire.go` 的破坏性启动清理调用，继续使用现有 TTL/索引 worker；不创建 ext concurrency 包装层 |
 | 2026-07-26 | 测试遵循实现就近原则 | 已确认 | ext 实现测试位于 `backend/extends`；原包私有行为和薄接入回归测试允许就地新增并登记 test-only 例外，不为目录合规导出 API |
 | 2026-07-26 | upstream 修改采用显式白名单 | 已确认 | 仅允许第 6.8.2 节列出的 Wire/main/server/OAuth service/service wire/条件图片 handler 与对应测试；第一期禁止 Ent/schema/migration 和通用框架 |
-| 2026-07-26 | 本地验证方案设计完成 | G0 已通过，G1 已实施 | 影响本地第一期的设计项已确认，阶段 0 门槛已满足；G1 仓库侧静态文件已生成，G2 镜像发布和 G3 节点安装/部署仍未授权 |
+| 2026-07-26 | 本地验证方案设计完成 | G0 已通过，G1 已实施 | 影响本地第一期的设计项已确认，阶段 0 门槛已满足；该决策形成时 G2/G3 尚未授权，后续 G2 已完成、G3 已授权执行 |
 | 2026-07-26 | 固定三个 Swarm manager | 已确认 | `node1`、`node2`、`node3` 均为 `manager + worker`；后续容量扩展节点仅作为 worker，不把 manager 扩展到 3 个以上；原 manager 永久失效时只晋升替代节点以恢复三个 manager |
 | 2026-07-26 | 固化 Config/Secret 命名与轮换 | 已确认 | Config 使用环境、用途和 `sha12` 内容摘要；Secret 使用环境、用途和 `vNNN`，不记录内容摘要。对象不原地覆盖，最小拆分并保留一个可用回滚版本；特殊密钥不做普通自动轮换，本地丢失时重建，生产启用前另设加密保管位置 |
 | 2026-07-26 | 固化 migration 超时、恢复与回滚边界 | 已确认 | 保留现有 10 分钟总上下文，三次全新数据库冷启动最慢不超过 5 分钟；`*_notx.sql` 只由单个受控 task 清理对应无效索引并以相同 digest 重试，不修改 migration 记录；schema 发布标记兼容性，生产 forward-only migration 必须先有已验证备份恢复方案 |
