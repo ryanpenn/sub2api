@@ -52,46 +52,9 @@ checksum:
 changelog:
   disable: true
 
-# Compatibility-only GHCR publishing configuration. The reviewed cluster
-# release entry point is .github/workflows/release.yml and uses Buildx
-# digest-first publishing; this file must not add Docker Hub, mutable tags, or
-# GitHub Releases.
-dockers:
-  - id: ghcr-amd64
-    goos: linux
-    goarch: amd64
-    image_templates:
-      - "ghcr.io/{{ .Env.GITHUB_REPO_OWNER_LOWER }}/sub2api:v{{ .Version }}-amd64"
-    dockerfile: Dockerfile.goreleaser
-    use: buildx
-    extra_files:
-      - deploy/docker-entrypoint.sh
-    build_flag_templates:
-      - --platform=linux/amd64
-      - --label=org.opencontainers.image.version={{ .Version }}
-      - --label=org.opencontainers.image.revision={{ .Commit }}
-      - --label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPO_OWNER }}/{{ .Env.GITHUB_REPO_NAME }}
-
-  - id: ghcr-arm64
-    goos: linux
-    goarch: arm64
-    image_templates:
-      - "ghcr.io/{{ .Env.GITHUB_REPO_OWNER_LOWER }}/sub2api:v{{ .Version }}-arm64"
-    dockerfile: Dockerfile.goreleaser
-    use: buildx
-    extra_files:
-      - deploy/docker-entrypoint.sh
-    build_flag_templates:
-      - --platform=linux/arm64
-      - --label=org.opencontainers.image.version={{ .Version }}
-      - --label=org.opencontainers.image.revision={{ .Commit }}
-      - --label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPO_OWNER }}/{{ .Env.GITHUB_REPO_NAME }}
-
-docker_manifests:
-  - name_template: "ghcr.io/{{ .Env.GITHUB_REPO_OWNER_LOWER }}/sub2api:v{{ .Version }}"
-    image_templates:
-      - "ghcr.io/{{ .Env.GITHUB_REPO_OWNER_LOWER }}/sub2api:v{{ .Version }}-amd64"
-      - "ghcr.io/{{ .Env.GITHUB_REPO_OWNER_LOWER }}/sub2api:v{{ .Version }}-arm64"
+# Compatibility-only local artifact configuration. Registry publishers are
+# intentionally absent; the only cluster image release entry point is the
+# reviewed digest-first .github/workflows/release.yml workflow.
 
 release:
   disable: true

@@ -117,6 +117,40 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify package is private or absent before push
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          response_file=$(mktemp)
+          trap 'rm -f "$response_file"' EXIT
+          status=$(
+            curl --silent --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              https://api.github.com/users/ryanpenn/packages/container/sub2api
+          )
+          case "$status" in
+            200)
+              visibility=$(jq -r '.visibility // empty' "$response_file")
+              if [[ "$visibility" != "private" ]]; then
+                echo "GHCR package visibility must be private before push, got: $visibility" >&2
+                exit 1
+              fi
+              ;;
+            404)
+              echo "GHCR package does not exist; first publication must create it private"
+              ;;
+            *)
+              echo "Unable to verify GHCR package visibility (HTTP $status)" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Refuse a completed or conflicting release
         shell: bash
         env:
