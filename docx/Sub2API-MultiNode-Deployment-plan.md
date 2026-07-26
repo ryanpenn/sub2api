@@ -1,6 +1,6 @@
 # Sub2API 多节点部署实施计划
 
-> 状态：`G0` 已通过；`G1` 最小改造边界与发布面阻断修正已通过技术复核，待用户确认；`G2/G3` 未授权、未执行
+> 状态：`G0/G1` 已通过；`G2/G3` 未授权、未执行
 > 创建日期：2026-07-26
 > 适用范围：三个 Multipass ARM64 节点的本地 Docker Swarm 验证，以及 AMD64 生产制品与配置基线
 > 方案来源：[`Sub2API-MultiNode-Deployment.md`](./Sub2API-MultiNode-Deployment.md)
@@ -44,7 +44,7 @@
 | --- | --- |
 | fork 分支 | `main`，跟踪 `origin/main` |
 | G1 实施起点 commit | `74b34cec90ff0638b5d51eabbf962ff4002d0472` |
-| G1 实施结果 commit | `4077dd769f54e69cd8a6acec6b44ad5e322ba4d9`；CI、单元/集成测试、Shell、lint、前端关键检查通过 |
+| G1 实施提交链 | `4077dd769f54e69cd8a6acec6b44ad5e322ba4d9`（静态骨架）→ `08825263b6b04e72e8bba45273d406969a900aac`（private GHCR 发布面收敛）→ `2842f9ba729dae6d6d7d58e1881a92730108286b`（关闭最终发布阻断）；最终 CI `30205790667`、Security Scan `30205790706` 均通过 |
 | upstream 基线 commit | `2730c1c43b29be003925b033f3f9e645e726bb8c` |
 | upstream VERSION | `backend/cmd/server/VERSION = 0.1.165` |
 | fork VERSION | `backend/extends/VERSION = ext.1`；实施前确认历史 fork tag 为空 |
@@ -76,7 +76,7 @@ flowchart LR
 | 门槛 | 允许的动作 | 当前状态 |
 | --- | --- | --- |
 | `G0` 计划审核 | 只审核本文，不修改实施文件或环境 | 已通过 |
-| `G1` 仓库实施授权 | 允许修改版本/发布文件，创建 `backend/extends`、`deploy/cluster` 和测试；不推送镜像、不修改节点 | 技术复核通过，待用户确认 |
+| `G1` 仓库实施授权 | 允许修改版本/发布文件，创建 `backend/extends`、`deploy/cluster` 和测试；不推送镜像、不修改节点 | 已通过 |
 | `G2` 制品发布授权 | 允许向私有 GHCR 推送新的不可变 tag/manifest，并记录平台 digest | 未授权 |
 | `G3` 本地环境实施授权 | 允许安装/配置 Docker、初始化 Swarm、创建 Secret/Config/service/volume，并在三个 Multipass 节点部署 | 未授权 |
 | `G4` 故障演练授权 | 允许在本地测试环境执行 task kill、节点停止、依赖中断、OOM 和受控 migration 失败测试 | 未授权 |
@@ -89,7 +89,7 @@ flowchart LR
 | 阶段 | 状态 | 进入条件 | 退出条件 |
 | --- | --- | --- | --- |
 | 0. 需求冻结与架构决策 | 已完成 | 方案设计审核 | 本地设计项确认、实施计划形成 |
-| 1. 节点与基础设施基线 | 进行中：G1 技术复核通过、待用户确认，G2/G3 未开始 | `G1`；涉及 GHCR/节点时再分别取得 `G2/G3` | 发布链、制品、配置骨架和三 manager 基线通过 |
+| 1. 节点与基础设施基线 | 进行中：G1 已通过，G2/G3 未开始 | `G1`；涉及 GHCR/节点时再分别取得 `G2/G3` | 发布链、制品、配置骨架和三 manager 基线通过 |
 | 2. 数据服务与单副本基线 | 未开始 | 阶段 1 通过且已取得 `G3` | PostgreSQL/Redis、单次 bootstrap、单副本与本机 Caddy 基线通过 |
 | 3. 多实例前置收敛 | 未开始 | 阶段 2 通过且代码修补范围再次确认 | 必要 P0 修补、进程级测试和静态验证满足门槛；不启用 `node2`/`node3` 应用副本 |
 | 4. 三副本与故障演练 | 未开始 | 阶段 3 通过且已取得 `G4` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
@@ -211,7 +211,7 @@ deploy/cluster/
 
 #### 6.4.1 G1 验证记录
 
-- G1 实施结果为 `4077dd769f54e69cd8a6acec6b44ad5e322ba4d9`；该提交将版本、Caddy 和集群骨架合并在一个提交中，与原计划的拆分建议不一致，但不重写已推送历史，后续发布修正和运行时修改继续分离提交；
+- G1 完整实施提交链为 `4077dd769f54e69cd8a6acec6b44ad5e322ba4d9`（版本、Caddy 和集群静态骨架）→ `08825263b6b04e72e8bba45273d406969a900aac`（private GHCR 发布面收敛）→ `2842f9ba729dae6d6d7d58e1881a92730108286b`（移除 GoReleaser 第二发布入口并前移 private 校验）；首个提交未按原计划拆分，但不重写已推送历史，两个审核修正均保持独立提交；最终提交对应 CI `30205790667` 与 Security Scan `30205790706` 均通过；
 - G1 提交审核确认 `backend/extends` 未增加运行时代码或实体，`deploy/cluster` 与业务修补隔离；两轮审核发现的越权发布面、可变 tag、半完成发布恢复、GoReleaser 第二发布入口和 private 校验顺序问题均已按授权收敛，尚未运行发布 workflow；
 - 发布面收敛静态验证：固定 `actionlint 1.7.7` 并调用 ShellCheck 检查两份 workflow 通过；固定 GoReleaser `2.17.0 check` 检查两份仅本地制品配置通过；提升脚本通过 `bash -n`、ShellCheck 以及“全新提升/相同 digest 部分恢复”两条无 registry 写入的 mock 回归；
 
@@ -617,4 +617,4 @@ deploy/cluster/
 - [ ] 阶段 5 交付物是否足够；
 - [ ] 是否仅授权 `G1`，或同时授权 `G2/G3`。
 
-当前 G0 已通过；G1 最小改造边界和发布面阻断修正已通过技术复核，等待用户确认；G2/G3 仍未授权。确认 G1 不自动触发镜像发布或节点实施。
+当前 G0/G1 已通过；G2/G3 仍未授权、未执行。G1 通过不自动触发镜像发布或节点实施。

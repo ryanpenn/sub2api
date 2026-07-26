@@ -1,6 +1,6 @@
 # Sub2API 多节点部署方案
 
-> 状态：本地验证方案设计与阶段 0 已完成；阶段 1 的 G1 最小改造边界与发布面阻断修正已通过技术复核，待用户确认；G2/G3 未授权、未执行；生产容量细项与生产监控目标按生产准入门槛后续补齐
+> 状态：本地验证方案设计与阶段 0 已完成，阶段 1 的 G1 已通过；G2/G3 未授权、未执行；生产容量细项与生产监控目标按生产准入门槛后续补齐
 > 创建日期：2026-07-26  
 > 更新日期：2026-07-26  
 > 节点信息来源：[`Multipass-Nodes.md`](./Multipass-Nodes.md)  
@@ -1002,7 +1002,7 @@ DNSPod 为生产域名配置每个应用节点公网 IP 的 A 记录，Caddy 固
 
 #### 6.8.1 已确认原则
 
-当前本文所在 fork 已完成仓库关系设置：`origin` 指向 `https://github.com/ryanpenn/sub2api.git`，`upstream` 指向 `https://github.com/Wei-Shaw/sub2api.git`；当前 `backend/cmd/server/VERSION=0.1.165`、`backend/extends/VERSION=ext.1`，只读组合版本为 `0.1.165-ext.1`。G1 已创建 `backend/extends` 元数据边界与 `deploy/cluster` 静态骨架，但多实例安全运行时修补、镜像发布和节点部署均未实施。因此以下内容同时作为已完成 G1 的约束和后续阶段的实施边界：
+当前本文所在 fork 已完成仓库关系设置：`origin` 指向 `https://github.com/ryanpenn/sub2api.git`，`upstream` 指向 `https://github.com/Wei-Shaw/sub2api.git`；当前 `backend/cmd/server/VERSION=0.1.165`、`backend/extends/VERSION=ext.1`，只读组合版本为 `0.1.165-ext.1`。G1 完整实施提交链为 `4077dd769f54e69cd8a6acec6b44ad5e322ba4d9`（静态骨架）→ `08825263b6b04e72e8bba45273d406969a900aac`（发布面收敛）→ `2842f9ba729dae6d6d7d58e1881a92730108286b`（关闭最终发布阻断），最终 CI `30205790667` 与 Security Scan `30205790706` 均通过。G1 已创建 `backend/extends` 元数据边界与 `deploy/cluster` 静态骨架，但多实例安全运行时修补、镜像发布和节点部署均未实施。因此以下内容同时作为已完成 G1 的约束和后续阶段的实施边界：
 
 1. 保持 `origin` 指向自有 fork、`upstream` 指向原项目，避免误向原项目推送；实施前后均通过只读命令核对 remote。
 2. 仅由人工按需从 `upstream` 获取更新，不设置固定频率，也不启用定时同步或自动合并；上游同步提交与自定义功能提交分离，确保来源、冲突和回滚范围可追溯。
@@ -1233,7 +1233,7 @@ task ops:node-status
 - 固化 fork remote、分支、上游同步和冲突人工处理策略，并确认双 VERSION 文件所有权、ext 独立递增、只读组合/tag 校验及 `ldflags` 注入规则；
 - 形成明确的范围外事项和风险接受记录。
 
-进入下一阶段的门槛：本地架构、故障边界、节点角色、Config/Secret 和 migration 策略已完成人工确认，阶段 0 门槛已满足；G1 最小改造边界和发布面阻断修正已通过技术复核，等待用户确认。G2 制品发布与 G3 节点实施仍需分别授权，当前不代表已获得镜像推送、实际安装、部署或生产切流授权。
+进入下一阶段的门槛：本地架构、故障边界、节点角色、Config/Secret 和 migration 策略已完成人工确认，阶段 0 门槛已满足，G1 已通过。G2 制品发布与 G3 节点实施仍需分别授权，当前不代表已获得镜像推送、实际安装、部署或生产切流授权。
 
 ### 阶段 1：节点与基础设施基线
 
@@ -1492,7 +1492,7 @@ task ops:node-status
 32. **本地可观测性（已确认）**：第一期不部署 Prometheus/Grafana/Loki 等常驻组件；使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据和 PostgreSQL/Redis 原生查询，以 `request_id + node + replica` 关联链路，由 GoTask 提供只读状态、日志和采样命令并形成验收记录。生产指标后端、日志集中化、保留期、告警阈值、值班和升级流程纳入生产准入前的“容量与可观测性补充方案”，当前不预设技术选型。
 33. **Swarm 节点角色（已确认）**：`node1`、`node2`、`node3` 固定作为 manager 并保留 worker 能力，以维持三个 manager 的 quorum 并演练单 manager 故障；后续容量扩展节点全部只作为 worker 加入，不把 manager 扩展到 3 个以上。原 manager 永久失效时从合格 worker 中晋升替代节点，只恢复到三个 manager。
 34. **实施产物（生成或构建后回填）**：ARM64/AMD64 最终平台镜像 digest。该项是阶段 1 制品，不再作为架构设计待确认项。
-35. **下一步授权**：本地设计与 G1 静态实施已完成，发布面阻断修正已通过技术复核；下一步由用户确认 G1，再分别决定是否授权 G2 发布不可变双架构制品、G3 修改本地节点；两项互不隐含，当前均未授权。
+35. **下一步授权**：本地设计与 G1 静态实施已经完成并通过；下一步分别决定是否授权 G2 发布不可变双架构制品、G3 修改本地节点；两项互不隐含，当前均未授权。
 
 ## 10. 计划产物
 
@@ -1577,7 +1577,7 @@ task ops:node-status
 | 2026-07-26 | 后台任务按失败证据治理 | 已确认证据门槛 | Account/Proxy expiry 验证通过即不改；Scheduled Test 重复执行失败测试成立时才复用 Redis leader lock 与 PostgreSQL advisory lock 回退；不新增 leader 实体、facade 或调度框架 |
 | 2026-07-26 | 代码修补与集群配置分目录存放 | G1 已实施 | `backend/extends` 当前仅存 fork VERSION；`deploy/cluster` 已存放 Stack、Caddy、双环境模板和 GoTask 契约，未混入业务修补代码 |
 | 2026-07-26 | 使用 GoTask 作为薄发布/运维入口 | G1 已实施并静态验证 | 位于 `deploy/cluster`，只编排 `validate/release/ops` 和受控 bootstrap；未创建空脚本、未引入新控制面/实体，也未采用参考项目的 Traefik、Docker Socket、local ACME volume 或可变 tag |
-| 2026-07-26 | 收敛 G2 发布面但不执行发布 | G1 技术复核通过，待用户确认 | Sub2API/Caddy 仅保留手工 private GHCR digest-first 发布，任何 push 前检查已有 package 为 private 或确认尚不存在，push 后再次检查 private；GoReleaser 不含 registry publisher；不创建 GitHub Release、不发布 Docker Hub、不发送通知、不使用可变 tag；G2/G3 仍未授权 |
+| 2026-07-26 | 收敛 G2 发布面但不执行发布 | G1 已通过 | Sub2API/Caddy 仅保留手工 private GHCR digest-first 发布，任何 push 前检查已有 package 为 private 或确认尚不存在，push 后再次检查 private；GoReleaser 不含 registry publisher；不创建 GitHub Release、不发布 Docker Hub、不发送通知、不使用可变 tag；G2/G3 仍未授权 |
 | 2026-07-26 | 原项目遵循最小改动且新增文件优先 | 已确认 | 修改已有文件只允许保留必要的薄接入逻辑 |
 | 2026-07-26 | 并发槽采用原文件直接最小修补 | 已确认 | 删除 `internal/service/wire.go` 的破坏性启动清理调用，继续使用现有 TTL/索引 worker；不创建 ext concurrency 包装层 |
 | 2026-07-26 | 测试遵循实现就近原则 | 已确认 | ext 实现测试位于 `backend/extends`；原包私有行为和薄接入回归测试允许就地新增并登记 test-only 例外，不为目录合规导出 API |
