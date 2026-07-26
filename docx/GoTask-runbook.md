@@ -99,7 +99,7 @@ task validate:environment ENV=local
 
 ## 4. Taskfile 最小组织方式
 
-方案固定的最小目录为：
+方案第一期固定的最小目录如下；`scripts/` 只在 Taskfile 无法安全表达已确认的具体校验时按需创建，不预建空目录：
 
 ```text
 deploy/cluster/
@@ -108,7 +108,6 @@ deploy/cluster/
 │   ├── validate.yml
 │   ├── release.yml
 │   └── ops.yml
-├── scripts/
 ├── stacks/
 └── env/
     ├── local-arm64/
@@ -128,7 +127,7 @@ includes:
 set: [errexit, nounset, pipefail]
 ```
 
-子 Taskfile 只提供稳定入口，复杂校验进入可测试脚本。例如 `taskfiles/validate.yml` 的示意形式：
+子 Taskfile 只提供稳定入口。若实施时确认环境/Stack 校验无法在 Taskfile 中安全表达，才创建对应可测试短脚本；例如 `taskfiles/validate.yml` 可以采用下列形式：
 
 ```yaml
 version: '3'
@@ -272,22 +271,22 @@ task ops:status
 
 ```bash
 task ops:node-status NODE=node3
-task ops:drain NODE=node3 CONFIRM=drain-node3
+docker node update --availability drain node3
 task ops:node-status NODE=node3
 task ops:status
 ```
 
-`ops:drain` 对应 `docker node update --availability drain`，会迁走该节点上的**所有** Swarm task，而不只是 Sub2API。执行前必须核对节点角色和实际 task。`node1`、`node2` 当前承载有状态服务，通用 `ops:drain` 应默认拒绝，只有完成备份并提供专门的数据服务迁移方案后才能操作。
+第一期不提供 `ops:drain` 自动化；`docker node update --availability drain` 会迁走该节点上的**所有** Swarm task，而不只是 Sub2API。执行前必须人工核对节点角色和实际 task。`node1`、`node2` 当前承载有状态服务，第一期禁止对其执行通用 drain；只有完成备份并提供专门的数据服务迁移方案后才能操作。
 
 ### 7.3 重新上线普通业务节点
 
 ```bash
-task ops:undrain NODE=node3 CONFIRM=undrain-node3
+docker node update --availability active node3
 task release:verify ENV=local
 task ops:status
 ```
 
-`ops:undrain` 将节点 availability 恢复为 `active`。必须等 Caddy、Sub2API、TLS、共享依赖和 `/ready` 全部验证通过后，生产环境才能人工恢复该节点的 DNS A 记录。
+第一期不提供 `ops:undrain` 自动化；上述命令将节点 availability 恢复为 `active`。必须等 Caddy、Sub2API、TLS、共享依赖和 `/ready` 全部验证通过后，生产环境才能人工恢复该节点的 DNS A 记录。
 
 整个 Sub2API 应用的下线属于独立变更，不复用节点 drain，也不删除 PostgreSQL/Redis。需要明确维护窗口、调用方行为、数据保护和恢复步骤后，再设计带确认门槛的专用任务。
 
@@ -395,7 +394,7 @@ task release:plan ENV=local RELEASE=v0.1.165-ext.1
 通过审核后让 Node4 恢复调度；Swarm 会根据现有 `global` service 自动创建两个 task，无需为了扩容重新构建镜像：
 
 ```bash
-task ops:undrain NODE=node4 CONFIRM=undrain-node4
+docker node update --availability active node4
 task release:verify ENV=local
 task ops:node-status NODE=node4
 task ops:status
@@ -431,7 +430,7 @@ curl --noproxy '*' \
 生产环境先人工移除 Node4 的 DNS 记录，等待 TTL 和已有连接消退，然后在 Manager 执行：
 
 ```bash
-task ops:drain NODE=node4 CONFIRM=drain-node4
+docker node update --availability drain node4
 task ops:node-status NODE=node4
 task ops:status
 ```
