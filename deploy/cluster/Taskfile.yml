@@ -2,6 +2,7 @@ version: '3'
 
 includes:
   validate: ./taskfiles/validate.yml
+  images: ./taskfiles/images.yml
   release: ./taskfiles/release.yml
   ops: ./taskfiles/ops.yml
 

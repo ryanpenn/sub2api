@@ -24,6 +24,7 @@ tasks:
         echo "stack=$STACK_NAME"
         echo "release=$SUB2API_RELEASE"
         echo "fork_commit=$SUB2API_IMAGE_COMMIT"
+        echo "image_delivery=$IMAGE_DELIVERY"
         echo "sub2api_image=$SUB2API_IMAGE"
         echo "caddy_image=$CADDY_IMAGE"
         echo "postgres_image=$POSTGRES_IMAGE"
@@ -58,7 +59,7 @@ tasks:
           "$STACK_NAME"
 
   verify:
-    desc: Verify service placement, running digest and every Caddy node entry
+    desc: Verify service placement, image identity and every Caddy node entry
     requires:
       vars:
         - name: ENV
@@ -196,6 +197,7 @@ tasks:
 
         docker --context "$DOCKER_CONTEXT" service create \
           --detach=true \
+          --no-resolve-image \
           --with-registry-auth \
           --name "$bootstrap_service" \
           --constraint node.labels.postgres==true \
@@ -232,6 +234,7 @@ tasks:
             test -n "$ADMIN_PASSWORD"
             test -n "$JWT_SECRET"
             test -n "$TOTP_ENCRYPTION_KEY"
+            mkdir -p "$DATA_DIR"
             exec /app/sub2api
           '
 

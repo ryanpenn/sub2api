@@ -1,10 +1,10 @@
 # Sub2API 多节点部署方案
 
-> 状态：本地验证方案设计与阶段 0 已完成，G1/G2 已通过；G3 已授权并执行中，G4 未授权；生产容量细项与生产监控目标按生产准入门槛后续补齐
+> 状态：本地验证方案设计与阶段 0 已完成，G1/G2/G3 已通过，G4 未授权；生产容量细项与生产监控目标按生产准入门槛后续补齐
 > 创建日期：2026-07-26  
-> 更新日期：2026-07-26  
+> 更新日期：2026-07-27
 > 节点信息来源：[`Multipass-Nodes.md`](./Multipass-Nodes.md)  
-> 当前边界：G1 已生成发布链和 `deploy/cluster` 静态骨架，G2 已发布不可变 tag/private GHCR 双架构制品并回填平台 digest；当前不登录或修改节点、不创建 Swarm 对象、不部署服务、不修改 Sub2API 运行时代码、不执行数据迁移或切流
+> 当前边界：G1 已生成发布链和 `deploy/cluster` 骨架，G2 已发布 private GHCR 双架构制品，G3 已完成三 manager、共享 PostgreSQL/Redis、一次性 bootstrap 与 node1 单副本 TLS 基线；当前不修改 Sub2API 运行时代码、不启用 node2/node3 应用副本、不执行 G4 故障演练、生产部署、数据迁移或切流
 
 ## 1. 文档目的
 
@@ -41,7 +41,7 @@
 23. 本地验收是多实例安全专项，不是 Sub2API 全量业务回归：必须覆盖 HTTP/SSE/WebSocket 与最小滚动排空、全部 OAuth provider 的跨节点回调、当前环境实际启用且确认高内存的生图入口、migration 并发和 Scheduled Test 重复执行；同步/异步复用路径不重复建设 limiter，Batch 保持现有 worker/job lock；缺少真实 Provider 账号时允许协议级模拟，不验收模型效果、内容质量或全部 Provider 业务能力。
 24. 采用 GoTask 作为 `deploy/cluster` 内的薄发布/运维入口，只编排校验、部署、验证、回滚和日常运维命令；不引入 Web UI、Agent、状态库、调度器或新控制面。只借鉴 `wuhanstudio/app-docker-swarm` 的 Taskfile 组织方式，不复用其 Traefik、Docker Socket、本地 ACME volume 和可变镜像 tag 方案。
 25. 第一期本地验证只做最小观测，不部署 Prometheus、Grafana、Loki 或新的常驻采集/告警组件；使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据及 PostgreSQL/Redis 原生查询形成验收记录，并通过 `request_id + node + replica` 关联请求。GoTask 只统一状态、日志和采样命令，不承担监控平台职责。
-26. 当前阶段不考虑镜像签名和离线 OCI/tar 分发；镜像供应链只使用私有 GHCR、不可变架构 tag、固定平台 digest、构建记录和模块/平台核验。GHCR 不可达时停止发布，不回退到 Docker Hub、`latest`、本地可变 tag 或未核验制品；未来有明确需求时再单独评审签名和离线兜底。
+26. 当前阶段不考虑镜像签名。生产供应链只使用私有 GHCR、不可变架构 tag、固定平台 digest、构建记录和模块/平台核验；GHCR 不可达时停止生产发布。Multipass 本地验证允许由可信开发机按固定版本/commit/date 构建 ARM64 镜像，以 source image ID、归档 SHA-256 和 node image ID 三重校验后上传加载；不回退到 Docker Hub、`latest`、未核验归档或可变内容。
 
 ## 2. 已知环境
 
@@ -145,21 +145,21 @@
 | 首次 bootstrap 与配置 | 已确认 | 仅一个临时受控实例执行一次 `AUTO_SETUP`；显式提供管理员密码、JWT/TOTP Secret，完成后关闭；正式副本统一只读挂载版本化 `config.yaml` Swarm secret 并设置 `AUTO_SETUP=false`，新增节点不重复 setup |
 | 本地 Secret 与测试账号 | 已确认 | 全新生成本地专用值，不复用生产凭据；JWT/TOTP 和应用配置由三个 Sub2API 副本共享，Caddy storage key 由三个 Caddy 共享，数据库/Redis 凭据按相应客户端统一注入；Provider 凭据仅在对应测试时按需注入，全部不进入 Git；`Multipass-Nodes.md` 明文节点登录测试密码是唯一文档例外 |
 | 本地功能验收范围 | 已确认 | 聚焦多实例安全：HTTP/SSE/WebSocket 与最小排空、全部 OAuth provider 跨节点回调、当前实际启用且确认高内存的生图入口、migration 并发及 Scheduled Test 重复执行；Account/Proxy expiry 只验证既有安全并行语义；无真实账号时允许协议级模拟；不做模型效果、内容质量和全部 Provider 业务能力的全量回归 |
-| 应用发布与原地更新 | 已确认 | Sub2API 容器视为不可变制品，只通过固定镜像 digest 和 Swarm 更新/回滚；Caddy 阻断在线更新检查、可回滚版本查询、原地更新和原地回滚入口，只保留 `GET /api/v1/admin/system/version` 展示完整 fork 版本；不修改源码、不增加开关 |
+| 应用发布与原地更新 | 已确认 | Sub2API 容器视为不可变制品；生产通过固定镜像 digest，本地通过已校验归档/image ID，由 Swarm 更新/回滚；Caddy 阻断在线更新检查、可回滚版本查询、原地更新和原地回滚入口，只保留 `GET /api/v1/admin/system/version` 展示完整 fork 版本；不修改源码、不增加开关 |
 | 配置中心 | 已确认不引入 | 当前三节点、低频配置变更场景使用 Docker Swarm Config/Secret 即可；不新增独立配置中心及其客户端监听、认证、备份和高可用体系 |
 | 多节点配置分发 | 已确认 | Caddyfile 使用版本化 Swarm Config；Sub2API `config.yaml` 使用版本化 Swarm Secret；敏感参数只进入 Secret，配置通过创建新版本并滚动更新，不共享可写文件 |
 | 模型价格快照 | 已确认 | 经审计的 `model_pricing.json` 使用版本化 Swarm Config，只读挂载到三个副本；本地第一期关闭远程同步，仅使用该 Config；生产准入时远程数据和 hash URL 必须固定到与快照一致的不可变上游 revision，不跟随 `main` 漂移 |
 | 模型价格更新 | 已确认 | 创建新价格 Config 并更新 service 引用；无需重建应用镜像，以 `parallelism: 1`、`order: stop-first` 和 `failure_action: pause` 更新，发布流程逐副本验证 `/ready` |
 | 滚动更新可用性 | 已确认边界 | 不整体停服，通常仍有另外两个副本提供集群容量；但本机 Caddy 不跨节点转发且当前不做 DNS 摘除，被更新节点存在短暂请求失败或重连窗口，不承诺逐节点零中断 |
 | 扩展代码目录 | 已建立元数据边界 | fork 根目录 `backend/extends` 已创建，当前仅含非运行时 `VERSION`；多实例安全运行时修补尚未实施 |
-| 集群部署目录 | 已完成 G1 静态骨架与 G2 digest 回填 | fork 根目录 `deploy/cluster` 已创建 Stack、双环境模板、Caddyfile 和 GoTask 契约；G2 已回填平台 digest，生产占位域名/IP及容量门槛仍会阻止未完成输入进入部署 |
-| 发布/运维入口 | 已完成 G1 静态骨架与 G2 制品发布 | 在 `deploy/cluster` 内使用 GoTask 提供统一命令入口；GoTask 不是长驻控制面，不承担 RBAC、Secret 存储、监控、分布式锁或审批。根 Taskfile、分组 Taskfile 和 GHCR manifest 提升脚本已创建并静态验证；G2 仅运行制品发布，尚未运行节点部署写操作 |
+| 集群部署目录 | 已完成 G1/G2/G3 | fork 根目录 `deploy/cluster` 已创建 Stack、双环境模板、Caddyfile、GoTask 契约和本地归档分发任务；G2 已回填平台 digest，G3 已完成 node1 单副本，生产占位域名/IP及容量门槛仍会阻止未完成输入进入部署 |
+| 发布/运维入口 | 已完成 G1/G2/G3 | 在 `deploy/cluster` 内使用 GoTask 提供统一命令入口；GoTask 不是长驻控制面，不承担 RBAC、Secret 存储、监控、分布式锁或审批。根 Taskfile、分组 Taskfile 和 GHCR manifest 提升脚本已创建并静态验证；G3 已通过同一入口完成本地归档分发、bootstrap、Stack apply 与 verify |
 | 原项目改动原则 | 已确认 | 遵循最小改动原则；优先新增文件，确需修改原文件时只保留最小接入改动 |
 | `extends` 目录例外 | 已确认 | ext 实现及其实现测试位于 `backend/extends`；原包私有行为与薄接入点的回归测试允许就地新增并登记为 test-only 例外，不能为了测试目录合规而导出私有 API、增加 wrapper 或重复 adapter；运行时 upstream 修改严格受第 6.8.2 节白名单约束 |
 | `extends` 接入与依赖 | 已确认 | Wire 只接入一个 `extends.ProviderSet`；server/router 只注入窄 readiness interface 并注册 `/ready`，不建设统一扩展路由器；适配代码新增文件优先；`extends` 不得反向导入 `cmd/server`、`internal/server`，原有 domain/service 不得依赖 `extends` |
 | 上游同步细节 | 已确认 | 仅人工按需发起，不设置固定频率；在临时同步分支 merge `upstream/main`，验证后再进入自有 `main`；共享分支禁止 rebase/force-push；发生冲突时人工介入，不设置强制处理规范 |
 | 版本标识 | 已确认 | `backend/cmd/server/VERSION` 只随 upstream 变化，fork 不修改；`backend/extends/VERSION` 只由 fork 独立维护且不随 upstream 重置。计划中的首个组合为 `0.1.165` + `ext.1`，发布和镜像 tag 为 `v0.1.165-ext.1`，部署固定镜像 digest |
-| 镜像来源与当前供应链边界 | 已确认 | 使用私有 GHCR：`ghcr.io/ryanpenn/sub2api` 与 `ghcr.io/ryanpenn/sub2api-caddy`；保留 ARM64/AMD64 架构 tag 和 multi-arch manifest，部署固定平台子镜像 digest 并保存构建/模块核验记录；当前不考虑镜像签名和离线 OCI/tar 兜底，GHCR 不可达时停止发布且不回退到其他 registry 或可变 tag |
+| 镜像来源与当前供应链边界 | 已确认 | 生产使用私有 GHCR 的 ARM64/AMD64 架构 tag、multi-arch manifest 与固定平台 digest；Multipass 本地使用可信开发机的固定输入构建与校验归档上传，不向节点配置 GHCR 凭据；两条路径都保存版本、commit、模块/平台和镜像身份，不使用 `latest` 或未核验制品 |
 | 容量目标 | 已确认分阶段 | 首期 3 台等规格 AMD64 集群节点，每台不少于 16G 内存和 200M 公网带宽；PostgreSQL/Redis 初期在集群内并计入所在节点资源预算，后期迁出；CPU、磁盘、普通 QPS、并发流/生图、请求大小及时延明确延期到 AMD64 压测后确定，不阻塞本地阶段 0，但未补齐前禁止认定生产就绪 |
 | 资源预留与限制 | 已确认本地档、生产数值部分待定 | 生产 Caddy memory reservation 不低于 `1G`，PostgreSQL/Redis 各不低于 `2G`；混合部署节点上的 Sub2API 必须设置统一 memory hard limit，具体生产 limit、reservation 与 `GOMEMLIMIT` 待压测确认；当前 4G Multipass 保持不扩容，本地专用档采用 Caddy `128MiB/256MiB`、PostgreSQL `512MiB/768MiB`、Redis `256MiB/512MiB`、Sub2API `512MiB/2GiB`（reservation/hard limit）及 `GOMEMLIMIT=1536MiB`，且不做容量验收 |
 | 本地可观测性 | 已确认 | 第一期只使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据及 PostgreSQL/Redis 原生查询；以 `request_id + node + replica` 关联链路，由 GoTask 统一状态、日志和采样命令并保存验收记录；不部署 Prometheus/Grafana/Loki 或本地常驻告警平台，生产监控另行设计 |
@@ -641,7 +641,7 @@ Sub2API 同时设置 `GOMEMLIMIT=1536MiB`。最重的 `node1` hard limit 合计�
 - 新增节点只挂载当前版本的同一配置 Secret，不重新执行 setup；Secret 轮换通过创建新版本并滚动更新 service 完成，不原地修改；
 - 本地验证使用全新生成的专用管理员密码、JWT Secret、`TOTP_ENCRYPTION_KEY`、数据库/Redis 密码和 Caddy storage encryption key，不复用生产值；Provider API key、OAuth client secret 和测试账号密码仅在对应测试时按需注入；
 - 上述流程全部由 `deploy/cluster` 的初始化、Secret 和验收配置表达，不进入 `backend/extends`。
-- Sub2API 容器是不可变制品；管理端在线更新检查、可回滚版本查询、原地更新和原地回滚入口由 Caddy 阻断，应用发布和回滚只允许使用固定镜像 digest 通过 Swarm 完成；只保留 `GET /api/v1/admin/system/version` 展示完整 fork 版本。
+- Sub2API 容器是不可变制品；管理端在线更新检查、可回滚版本查询、原地更新和原地回滚入口由 Caddy 阻断。生产应用发布和回滚只允许使用固定平台镜像 digest；本地 Multipass 可使用本机固定输入构建、带完整版本的本地 tag、归档 SHA-256 和节点加载后 image ID 的组合身份，通过 Swarm 完成部署。只保留 `GET /api/v1/admin/system/version` 展示完整 fork 版本。
 
 #### 6.7.1 推荐配置分工
 
@@ -666,7 +666,7 @@ Sub2API 同时设置 `GOMEMLIMIT=1536MiB`。最重的 `node1` hard limit 合计�
 - Secret 名称固定为 `sub2api-{env}-{purpose}-vNNN`，例如 `sub2api-local-app-config-v001`、`sub2api-local-postgres-password-v001`、`sub2api-local-redis-app-password-v001`、`sub2api-local-redis-caddy-password-v001` 和 `sub2api-local-caddy-storage-key-v001`；Secret 名称、发布记录和日志中不得包含内容摘要；
 - 只有消费范围不同的敏感值才拆成独立 Secret，避免为每个字段创建对象；JWT Secret 和 `TOTP_ENCRYPTION_KEY` 默认位于 `app-config`，PostgreSQL、Redis 与 Caddy storage 凭据按各自消费者边界拆分；
 - Config/Secret 不原地覆盖；变更时创建新对象、更新 service 引用并完成逐副本验证。默认只保留最近一个仍可用的旧版本作为回滚代次；回滚窗口结束且确认没有 service 引用后再清理；
-- 回滚通过恢复 service 对旧 Config/Secret 对象的引用完成，并记录 Config 名称/内容摘要、Secret 名称/object ID、镜像 digest 和部署时间的对应关系，不记录 Secret 内容或内容摘要；
+- 回滚通过恢复 service 对旧 Config/Secret 对象的引用完成，并记录 Config 名称/内容摘要、Secret 名称/object ID、生产镜像 digest 或本地归档/image ID 组合身份，以及部署时间的对应关系，不记录 Secret 内容或内容摘要；
 - PostgreSQL/Redis 可轮换凭据使用“创建新凭据或新 role/ACL、更新消费者、验证、撤销旧凭据”的顺序，不直接修改仍被消费者使用的密码；
 - JWT Secret 不参与普通滚动轮换；如确需轮换，作为会使现有登录失效的维护操作处理。`TOTP_ENCRYPTION_KEY` 和 Caddy storage encryption key 不做常规自动轮换；没有经过验证的重加密流程时必须恢复旧 key，不为轮换增加双 key 框架、配置中心或额外实体；
 - 本地全新环境不为应用 Secret 建立集群外备份，Secret 丢失时允许重建环境；生产启用前必须确定独立的加密保管位置，但本阶段不预设具体产品。Swarm Secret 是分发副本，不是唯一备份；
@@ -682,18 +682,20 @@ Sub2API 同时设置 `GOMEMLIMIT=1536MiB`。最重的 `node1` hard limit 合计�
 
 只有在节点/环境显著增加、配置高频变化、必须无滚动部署动态生效、需要灰度/租户级配置或 Swarm Config/Secret 发布成为主要运维瓶颈时，才重新评估独立配置中心。届时必须同时评估配置中心自身的认证、高可用、备份恢复、客户端缓存、监听失败和版本回滚，不因“多节点”本身直接引入。
 
-G2 已完成首次构建并回填 ARM64/AMD64 平台镜像 digest；节点侧拉取和容器内命令复验随 G3 执行。
+G2 已完成首次 GHCR 构建并回填 ARM64/AMD64 平台镜像 digest。G3 本地节点不依赖 GHCR 凭据，改为在可信开发机以相同固定源码、版本和 `ldflags` 输入构建 ARM64 镜像，校验源 image ID 与归档 SHA-256 后上传到目标节点执行 `docker load`，并再次校验节点 image ID；生产仍使用 G2 的平台 digest。
 
 #### 6.7.4 双架构制品共同基线
 
-测试与生产仅在目标平台、入口域名/TLS、共享依赖端点和最终镜像 digest 上分开；应用版本、Caddy 版本、Redis storage module、配置结构和发布规则保持一致。
+测试与生产在目标平台、入口域名/TLS、共享依赖端点和镜像交付方式上分开；应用版本、Caddy 版本、Redis storage module、配置结构和运行约束保持一致。本地使用可审计的归档分发是测试环境例外，不取代生产 registry/digest 发布链。
 
 | 组件 | 固定版本或构建输入 | ARM64 测试 tag | AMD64 生产 tag | 部署约束 |
 | --- | --- | --- | --- | --- |
-| Sub2API | release `v0.1.165-ext.1`；构建参数 `VERSION=0.1.165-ext.1`，同时注入 fork `COMMIT`、`DATE` | `ghcr.io/ryanpenn/sub2api:v0.1.165-ext.1-arm64@sha256:1845076d3ff9dd23c15e807c754438c2dc142d7b1ce8cdee2e407d903c543708` | `ghcr.io/ryanpenn/sub2api:v0.1.165-ext.1-amd64@sha256:0186e45b9e2cf7a9dad65dadb0e342b9275764ddd3da406c48d343cd1e43e08f` | multi-arch digest `sha256:dfff6a1333ebda168bbd0e868fba743c52f06c765aa3ae0beb373935a5e01f5f`；service 固定平台子镜像 |
-| Caddy | Caddy `v2.11.4` + `github.com/pberkel/caddy-storage-redis@v1.8.1` | `ghcr.io/ryanpenn/sub2api-caddy:v2.11.4-redis-v1.8.1-arm64@sha256:2e703acbd2db648195428f413f9338754481b6829752f330e35b5b901a01d531` | `ghcr.io/ryanpenn/sub2api-caddy:v2.11.4-redis-v1.8.1-amd64@sha256:b69f3df3fd10b6ec14db870047678e3be7cf511119169894100534404839cbed` | multi-arch digest `sha256:c2ded406a07ebf438e0c0b7cbdd5a0773af6a78a65d8b6687c217a94934eb875`；service 固定平台子镜像 |
+| Sub2API | release `v0.1.165-ext.1`；构建参数 `VERSION=0.1.165-ext.1`，同时注入 fork `COMMIT`、`DATE` | `sub2api-local/sub2api:v0.1.165-ext.1-arm64`；node image ID `sha256:658b62d53062a22140670a40622b65f69432c7f32293113e2960c74b826e1e04` | `ghcr.io/ryanpenn/sub2api:v0.1.165-ext.1-amd64@sha256:0186e45b9e2cf7a9dad65dadb0e342b9275764ddd3da406c48d343cd1e43e08f` | 本地归档 SHA-256 `150e648aeefec2cd541807bb726e9ca4b4c243f4f1cf639045d50ce49a51da39`；生产固定平台子镜像 digest |
+| Caddy | Caddy `v2.11.4` + `github.com/pberkel/caddy-storage-redis@v1.8.1` | `sub2api-local/caddy:v2.11.4-redis-v1.8.1-arm64`；node image ID `sha256:26a85a756bcbd9d2f94d9bc55e48fce85ee55cf181b6002a3c82e1292504b739` | `ghcr.io/ryanpenn/sub2api-caddy:v2.11.4-redis-v1.8.1-amd64@sha256:b69f3df3fd10b6ec14db870047678e3be7cf511119169894100534404839cbed` | 本地归档 SHA-256 `cc8f05e47661ca5b41998b884831abc8e126082cf9ed697cd82fdc56d9c92ff2`；生产固定平台子镜像 digest |
 | PostgreSQL | `postgres:18-alpine`；index `sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15` | `postgres:18-alpine@sha256:122c9942437efcbbb8d595fc578dee7d26ee1543c2a8634d183adfa4a1e55b4d` | `postgres:18-alpine@sha256:b6a16ed0eb96e2c362811f7eeb951eac8b459e7b40be4149ea5444aa7c65569b` | 不使用浮动 tag 直接部署 |
 | Redis | `redis:8-alpine`；index `sha256:8096655e437712b07503796fb64d81359256cfcff0ab29d95a7da72863786efb` | `redis:8-alpine@sha256:ca5075df9552da2423c20c691a0208d60106f2ea71b47406d52c396bf0a6bd65` | `redis:8-alpine@sha256:465aff338d817971674ff1ec3c0d59182e2b687018e87bf94b6e1491d0bb79e2` | 不使用浮动 tag 直接部署 |
+
+本地归档分发由 `task images:distribute-local ENV=local` 统一执行：只接受 `local-arm64` 环境，先核对开发机镜像平台和 source image ID，再生成临时归档并核对记录的 SHA-256，上传到 `LOCAL_IMAGE_NODES` 后执行 `docker load`，最后核对各节点 image ID 并删除临时归档。Stack 使用 `--resolve-image never`，环境校验在发布前确认本地 tag 解析到记录的 node image ID；不得手工重打同名 tag 后跳过分发校验。扩展到 node2/node3 前，必须先把它们加入 `LOCAL_IMAGE_NODES` 并完成同一校验。
 
 G2 的 annotated tag `v0.1.165-ext.1` 固定到 `5779d0b4b0d7b4821f2283afd667598380343386`。Sub2API 发布运行 [`30207208963`](https://github.com/ryanpenn/sub2api/actions/runs/30207208963) 与 Caddy 发布运行 [`30207210054`](https://github.com/ryanpenn/sub2api/actions/runs/30207210054) 最终成功，两个 GHCR package 均已核验为 private。首次架构 push 后 GitHub 将新 package 初始化为 public，post-push gate 按设计阻止了最终 tag 提升；人工把精确 package 调整为 private 后，Sub2API 仅重跑失败 publish job 并复用相同 digest，Caddy 则在 publish 前完成调整。该一次性初始化事实保留在实施记录中，后续发布因 package 已存在且为 private，会在任何 digest push 前通过同一门槛复核。
 
@@ -725,8 +727,9 @@ nodes:
   - {name: node2, address: 192.168.252.3, roles: [caddy, sub2api, redis]}
   - {name: node3, address: 192.168.252.4, roles: [caddy, sub2api]}
 images:
-  sub2api: ghcr.io/ryanpenn/sub2api:v0.1.165-ext.1-arm64@sha256:<sub2api-arm64-digest>
-  caddy: ghcr.io/ryanpenn/sub2api-caddy:v2.11.4-redis-v1.8.1-arm64@sha256:<caddy-arm64-digest>
+  delivery: local-archive
+  sub2api: sub2api-local/sub2api:v0.1.165-ext.1-arm64
+  caddy: sub2api-local/caddy:v2.11.4-redis-v1.8.1-arm64
   postgres: postgres:18-alpine@sha256:<postgres-arm64-digest>
   redis: redis:8-alpine@sha256:<redis-arm64-digest>
 entry:
@@ -742,12 +745,12 @@ services:
     empty_volume_relocation: forbidden
   sub2api:
     mode: global
-    constraints: [node.labels.sub2api == true, node.platform.arch == arm64]
+    constraints: [node.labels.sub2api == true, node.platform.arch == aarch64]
     host_port: 8080
     auto_setup: false
   caddy:
     mode: global
-    constraints: [node.labels.caddy == true, node.platform.arch == arm64]
+    constraints: [node.labels.caddy == true, node.platform.arch == aarch64]
     network: host
     listen: [80, 443]
     admin: 127.0.0.1:2019
@@ -975,7 +978,7 @@ DNSPod 为生产域名配置每个应用节点公网 IP 的 A 记录，Caddy 固
 
 #### 6.7.7 GHCR 发布与拉取
 
-统一使用以下两个私有 GHCR package：
+生产统一使用以下两个私有 GHCR package：
 
 - `ghcr.io/ryanpenn/sub2api`：fork 的 Sub2API 镜像；
 - `ghcr.io/ryanpenn/sub2api-caddy`：固定 Caddy 与 Redis storage module 的自定义镜像。
@@ -984,7 +987,7 @@ DNSPod 为生产域名配置每个应用节点公网 IP 的 A 记录，Caddy 固
 
 两份 GoReleaser 兼容配置必须显式保留 `-X main.Version={{.Env.FORK_VERSION}}`，继续注入 `Commit`、`Date` 和 `BuildType`，设置 `release.disable=true`，并且不得包含镜像 tag 模板、`dockers`、`docker_manifests` 或其他 registry publisher。这些 `.github/workflows`/GoReleaser 调整属于发布治理白名单；`backend/extends/VERSION` 是 `backend/extends` 中唯一的非运行时代码元数据例外。Caddy 使用独立 package 和构建 job，不把 Caddy 二进制塞入 Sub2API 镜像，并与 Sub2API 复用窄 manifest 提升脚本。上游一键安装器和应用内在线更新不作为集群发布入口，第一期不为其兼容 `-ext.N` 修改源码；集群只使用已验证的平台镜像 digest 发布和回滚。
 
-拉取规则：
+生产拉取规则：
 
 - package 必须保持 private；首次创建后若 GitHub 返回非 private，post-push gate 必须在最终 tag 提升前停止，由人工只针对精确 package 修正可见性后再恢复；发布 workflow 只使用仓库级 `GITHUB_TOKEN` 写入，不创建长期 `write:packages` PAT；
 - 部署使用独立的只读 PAT classic，权限只包含 `read:packages`，不能复用个人日常高权限 token；
@@ -992,7 +995,9 @@ DNSPod 为生产域名配置每个应用节点公网 IP 的 A 记录，Caddy 固
 - Stack 中记录的是平台架构 tag 加平台子镜像 digest；发布前使用 manifest 检查确认 digest 的 `os=linux` 和 `architecture` 与目标环境一致；
 - tag、manifest 和 digest 均不可覆盖；回滚继续引用旧平台 digest；
 - registry credential 不进入 Git、Swarm Config、应用 Secret、镜像层或日志，轮换后重新部署 service auth；
-- GHCR 不可达时停止发布，不自动回退到 Docker Hub、`latest`、本地可变 tag 或其他未核验制品；当前不生成、不保留也不验收离线 OCI/tar 分发方案，未来只有在出现明确需求后才重新评审。
+- GHCR 不可达时停止生产发布，不自动回退到 Docker Hub、`latest`、本地可变 tag 或其他未核验制品。
+
+Multipass 本地验证是独立交付例外：开发机使用与 G2 相同的固定源码、版本和 `ldflags` 输入构建 ARM64 镜像，`task images:distribute-local ENV=local` 校验 source image ID、归档 SHA-256 和节点加载后 image ID，再由 Stack 以 `--resolve-image never` 使用带完整版本的本地 tag。节点不保存 GHCR 凭据；归档仅作为本地测试交付物临时生成并在加载后删除，不定义为生产离线兜底。
 
 本 fork 的集群发布入口不保留 Docker Hub、GitHub Release 或外部通知路径。若未来确需恢复任何对外发布面，必须先单独修改方案并取得授权，不能复用 G2 的私有 GHCR 授权。
 
@@ -1471,10 +1476,10 @@ task ops:node-status
 11. **数据库 schema migration（已确认）**：保留应用启动 migration 和现有 10 分钟总上下文，以固定 ID 的 PostgreSQL session advisory lock 串行执行；等待副本获锁后复核 `schema_migrations`/checksum，不新增 migration Job、配置项或 ext 修补。全新数据库执行三次冷启动，最慢不超过 5 分钟；失败/超时副本不进入 ready。`*_notx.sql` 失败时暂停发布，由单个受控 task 检查并只清理对应无效索引，以相同 digest 重试，禁止修改 migration 记录或自动删除业务数据；后续新 `*_notx.sql` 必须附恢复说明。schema 变化分为 `backward-compatible`/`forward-only`，不兼容时禁止只回滚镜像，生产 forward-only 发布必须先具备已验证备份恢复方案。
 12. **首次 bootstrap 与权威配置（已确认）**：只有一个临时受控实例执行一次 `AUTO_SETUP`，显式提供管理员密码和 JWT/TOTP Secret，完成后关闭；正式副本统一只读挂载版本化 `config.yaml` Swarm secret、设置 `AUTO_SETUP=false`，新增节点不重复 setup；不修改应用代码或新增协调实体。
 13. **配置分发与配置中心（已确认）**：当前不引入独立配置中心；Caddyfile 使用版本化 Swarm Config，Sub2API `config.yaml` 和敏感参数使用版本化 Swarm Secret；`deploy/cluster` 保存脱敏模板、对象引用、摘要和发布记录，变更通过新版本与滚动更新完成。
-14. **不可变容器与发布入口（已确认）**：只通过固定镜像 digest 和 Swarm 更新/回滚；Caddy 阻断管理端在线更新检查、可回滚版本查询、原地更新和原地回滚入口，只保留 `/version` 展示完整 fork 版本，Sub2API 端口不对测试入口直接发布；不修改源码或新增开关。
+14. **不可变容器与发布入口（已确认）**：生产通过固定镜像 digest，本地通过已校验归档/image ID，并统一由 Swarm 更新/回滚；Caddy 阻断管理端在线更新检查、可回滚版本查询、原地更新和原地回滚入口，只保留 `/version` 展示完整 fork 版本。本地阶段接受 host-mode `8080` 的测试安全例外，生产必须限制绕过路径；不修改源码或新增开关。
 15. **模型价格与滚动更新（已确认）**：`model_pricing.json` 使用经审计、带摘要的 Swarm Config，远程 URL/hash 固定到对应不可变 revision；价格更新不重建镜像，使用 `parallelism: 1`、`stop-first`、`failure_action: pause` 和逐副本 `/ready` 验证。集群不整体停服，但更新节点存在短暂失败/重连窗口，当前不承诺逐节点零中断。
 16. **后台任务多实例安全（已确认证据门槛）**：Account/Proxy expiry 先验证既有条件更新/事务语义，测试通过即不改；Scheduled Test 是当前唯一明确候选，只有重复执行失败测试成立时才复用 Redis leader lock 和 PostgreSQL advisory lock 回退；协调后端均不可用时跳过，不新增 leader 实体、facade 或通用调度框架；S3 定时备份保持禁用并验证零执行。
-17. **目录分工（已确认并完成 G1/G2）**：`backend/extends` 存放代码修补/扩展，`deploy/cluster` 存放集群部署方案配置；两者不得混放。当前已创建 VERSION 元数据边界、Stack/环境模板、GoTask 契约、Caddy 构建输入和窄 GHCR manifest 提升脚本，G2 已完成镜像发布和 digest 回填，但未执行节点或服务部署。
+17. **目录分工（已确认并完成 G1/G2/G3）**：`backend/extends` 存放代码修补/扩展，`deploy/cluster` 存放集群部署方案配置；两者不得混放。当前已创建 VERSION 元数据边界、Stack/环境模板、GoTask 契约、Caddy 构建输入、窄 GHCR manifest 提升脚本和本地归档分发任务；G3 已完成 node1 单副本基线，未修改 `backend`。
 18. **`extends` 例外（已确认）**：ext 实现及其实现测试位于 `backend/extends`；原包私有行为和薄接入点回归测试允许就地新增并登记为 test-only 例外。运行时 upstream 修改严格限于第 6.8.2 节白名单；第一期禁止 Ent/schema/migration、新实体和通用框架，禁止为了测试目录合规导出私有 API或增加包装层。
 19. **依赖方向（已确认）**：Wire 组装和 router 注册各保留一个统一薄接入点；`extends` 不导入 `cmd/server`、`internal/server`，原有 domain/service 不依赖 `extends`。
 20. **上游同步方式（已确认）**：仅人工按需发起且不设置固定频率；临时同步分支 merge `upstream/main`，验证后再进入自有 `main`；共享分支禁止 rebase/force-push；冲突人工介入，不设强制处理规范。
@@ -1483,16 +1488,16 @@ task ops:node-status
 23. **服务模式（已确认）**：Sub2API 使用 `global` service；每个 `sub2api=true` 节点自动运行 1 个副本，新增合格节点并添加标签后自动扩容，节点故障时不在其他节点补第二副本。
 24. **Caddy 运行方式（已确认）**：Caddy 使用 Swarm `global` service；每个 `caddy=true` 节点运行 1 个 host-network task，直接绑定 `80/443`，通过 Swarm Config/Secret 获取配置，不运行 systemd Caddy、不挂载 Docker Socket、不使用 routing mesh。
 25. **本地 TLS（已确认）**：使用 `sub2api.test` 和 Caddy `tls internal`；命令行通过 `curl --resolve` 精确访问各节点并使用同一 Local CA 根证书，浏览器按需使用单条 `/etc/hosts` 映射和 macOS System Keychain；公网 ACME 留到生产预演。
-26. **镜像版本与仓库（已确认）**：Sub2API 为 `v0.1.165-ext.1`，发布到私有 `ghcr.io/ryanpenn/sub2api`；Caddy 为 `v2.11.4`（commit `e2eee6a7fce366321294c9c2a79f3146891dcbdf`），Redis storage module 为 `v1.8.1`（commit `230a32809cc4016427db0c11c925d703132941b1`），发布到私有 `ghcr.io/ryanpenn/sub2api-caddy`；保留 ARM64/AMD64 tag 和 multi-arch manifest，部署固定平台子镜像 digest；当前不考虑签名和离线 OCI/tar，GHCR 不可达时停止发布且不回退到其他 registry 或可变 tag。
+26. **镜像版本与仓库（已确认）**：Sub2API 为 `v0.1.165-ext.1`；Caddy 为 `v2.11.4`（commit `e2eee6a7fce366321294c9c2a79f3146891dcbdf`），Redis storage module 为 `v1.8.1`（commit `230a32809cc4016427db0c11c925d703132941b1`）。生产发布到两个私有 GHCR package 并固定平台子镜像 digest；Multipass 本地以三重校验的 ARM64 归档上传，不配置 registry 凭据。当前不考虑签名，不使用其他 registry、`latest` 或未核验制品。
 27. **容量目标（已确认分阶段）**：生产首期 3 台等规格 AMD64 集群节点，每台不少于 16G 内存和 200M 公网带宽；Caddy reservation 不低于 `1G`，PostgreSQL/Redis 各不低于 `2G`，Sub2API 必设统一 memory hard limit。具体生产 limit、Sub2API reservation、`GOMEMLIMIT`、CPU、磁盘、连接池、普通并发、SSE/WS 连接数、并发生图数、队列/拒绝门槛、最大请求/响应大小和服务目标明确延期到生产峰值分析及 AMD64 单/三副本压测，不阻塞本地阶段 0/1，但完成“容量与可观测性补充方案”前禁止认定生产就绪或切流。当前 4G Multipass 已确认不扩容，本地档固定为 Caddy `128MiB/256MiB`、PostgreSQL `512MiB/768MiB`、Redis `256MiB/512MiB`、Sub2API `512MiB/2GiB`（reservation/hard limit）及 `GOMEMLIMIT=1536MiB`，且不做容量验收。
 28. **S3 与恢复目标（已确认分期）**：上游已有 S3 兼容接口，第一期保持未配置/禁用，不新增接口、实体、SDK、`extends` 代码或备份 service，也不以既定 RPO/RTO 验收；后续目标仍为 PostgreSQL `RPO<=15m`/`RTO<=4h`、Redis/Caddy storage `RPO<=1h`/`RTO<=4h`，具体存放位置、保留期和演练周期另行确认。
-29. **GoTask 发布/运维入口（已确认）**：只作为 `deploy/cluster` 内的薄 CLI 编排层，不引入长驻控制面或新实体；最小目录从根 Taskfile、`taskfiles/{validate,release,ops}.yml`、`stacks/`和 `env/{local-arm64,production-amd64}/` 按实际需要创建，不预建空 `scripts/`；首期 `ops` 只含状态、日志和节点检查，drain/undrain 自动化延期。
+29. **GoTask 发布/运维入口（已确认）**：只作为 `deploy/cluster` 内的薄 CLI 编排层，不引入长驻控制面或新实体；最小目录包含根 Taskfile、`taskfiles/{validate,release,images,ops}.yml`、`stacks/`和 `env/{local-arm64,production-amd64}/`，其中 `images` 仅负责本地归档分发校验，不预建空 `scripts/`；首期 `ops` 只含状态、日志和节点检查，drain/undrain 自动化延期。
 30. **Secret 与配置（已确认）**：Config 固定使用 `sub2api-{env}-{purpose}-{sha12}`，Secret 固定使用 `sub2api-{env}-{purpose}-vNNN`，环境名为 `local` 或 `production`；Secret 不记录内容摘要。只有消费范围不同的敏感值才拆分，JWT/TOTP 默认收敛在 `app-config`，数据库/Redis/Caddy storage 凭据按消费者边界拆分；本地使用全新值且不做外部备份，丢失时重建，生产启用前必须确定独立加密保管位置。对象不原地覆盖，默认保留一个可用旧版本用于回滚；数据库/Redis 凭据先新增、切换并验证再撤销旧值；JWT/TOTP/Caddy storage key 不做普通自动轮换。Provider 凭据按需注入且不进入 Git，发布记录只保存 Secret 名称/object ID、消费者和时间；`Multipass-Nodes.md` 只对节点登录测试密码保留明文例外。
 31. **功能范围（已确认）**：本地只做多实例安全专项验收，覆盖 HTTP/SSE/WebSocket 与最小滚动排空、所有 OAuth provider 跨节点回调、当前实际启用且确认高内存的生图入口、migration 并发及 Scheduled Test 重复执行；Account/Proxy expiry 只验证既有安全并行语义；缺少真实 Provider 账号时允许协议级模拟；不做模型效果、内容质量或全部 Provider 业务能力的全量回归。
 32. **本地可观测性（已确认）**：第一期不部署 Prometheus/Grafana/Loki 等常驻组件；使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据和 PostgreSQL/Redis 原生查询，以 `request_id + node + replica` 关联链路，由 GoTask 提供只读状态、日志和采样命令并形成验收记录。生产指标后端、日志集中化、保留期、告警阈值、值班和升级流程纳入生产准入前的“容量与可观测性补充方案”，当前不预设技术选型。
 33. **Swarm 节点角色（已确认）**：`node1`、`node2`、`node3` 固定作为 manager 并保留 worker 能力，以维持三个 manager 的 quorum 并演练单 manager 故障；后续容量扩展节点全部只作为 worker 加入，不把 manager 扩展到 3 个以上。原 manager 永久失效时从合格 worker 中晋升替代节点，只恢复到三个 manager。
-34. **实施产物（已完成 G2）**：ARM64/AMD64 最终平台镜像 digest 已回填，发布 tag、fork commit、架构 digest、multi-arch digest 与 workflow run 可追溯。
-35. **当前授权**：本地设计与 G1/G2 已完成并通过，G3 已单独授权用于三个本地节点实施；G3 不隐含 G4，当前不得执行故障注入。
+34. **实施产物（已完成 G3）**：ARM64/AMD64 GHCR 平台 digest、本地 ARM64 source/node image ID 与归档 SHA-256 均已回填；发布 tag、fork commit、构建输入、镜像身份和 workflow run 可追溯。
+35. **当前授权**：本地设计与 G1/G2/G3 已完成并通过；G3 不隐含 G4，当前不得执行故障注入。
 
 ## 10. 计划产物
 
@@ -1530,8 +1535,9 @@ task ops:node-status
 | 2026-07-26 | 每节点使用 Caddy 固定代理本机 Sub2API | 已确认 | 不采用 Traefik，不经 routing mesh 二次分流 |
 | 2026-07-26 | Caddy 使用 Swarm `global` service | 已确认 | 每个 `caddy=true` 节点运行 1 个 host-network task，直接绑定 `80/443`；使用 Swarm Config/Secret，不运行 systemd Caddy、不挂载 Docker Socket |
 | 2026-07-26 | 三个 Caddy 使用相同 Redis storage | 已确认 | 使用 `github.com/pberkel/caddy-storage-redis@v1.8.1`，Caddy 固定 `v2.11.4`；全部节点使用同环境的同一 storage 配置和 Secret |
-| 2026-07-26 | 测试与生产分别使用 ARM64/AMD64 配置 | 已确认 | 当前 Multipass 测试使用 `linux/arm64`，线上生产使用 `linux/amd64`；版本基线一致、分架构 tag、部署分别固定平台 digest |
-| 2026-07-26 | 使用私有 GHCR 作为权威镜像源 | 已确认 | Sub2API 使用 `ghcr.io/ryanpenn/sub2api`，Caddy 使用 `ghcr.io/ryanpenn/sub2api-caddy`；保留架构 tag/multi-arch manifest，部署固定平台子镜像 digest，拉取凭据仅授予 `read:packages`；当前不考虑签名和离线 OCI/tar，GHCR 不可达时停止发布且不回退 |
+| 2026-07-26 | 测试与生产分别使用 ARM64/AMD64 配置 | 已确认 | 当前 Multipass 测试使用 `linux/arm64`，线上生产使用 `linux/amd64`；版本和构建输入基线一致，生产固定平台 digest，本地固定归档/image ID 组合身份 |
+| 2026-07-26 | 使用私有 GHCR 作为生产权威镜像源 | 已确认 | Sub2API 使用 `ghcr.io/ryanpenn/sub2api`，Caddy 使用 `ghcr.io/ryanpenn/sub2api-caddy`；保留架构 tag/multi-arch manifest，生产部署固定平台子镜像 digest，拉取凭据仅授予 `read:packages`；GHCR 不可达时停止生产发布且不回退 |
+| 2026-07-27 | Multipass 本地使用校验归档上传 | 已确认并完成 G3 | 开发机固定输入构建 ARM64 镜像，通过 source image ID、归档 SHA-256、node image ID 三重校验后上传加载；节点不配置 GHCR 凭据，不把本地归档定义为生产离线兜底 |
 | 2026-07-26 | 生产首期采用 3 台等规格集群节点 | 已确认分阶段 | 每台 AMD64 节点不少于 16G 内存和 200M 公网带宽；CPU、磁盘、具体容器限额及服务目标在生产峰值分析和 AMD64 压测后写入“容量与可观测性补充方案”，未完成前禁止认定生产就绪或切流 |
 | 2026-07-26 | 混合部署节点设置明确资源边界 | 已确认原则、数值部分待定 | 生产 Caddy memory reservation 不低于 `1G`，PostgreSQL/Redis 各不低于 `2G`；Sub2API 必须设置统一 memory hard limit，具体生产值待压测确认 |
 | 2026-07-26 | 本地 4G 节点采用缩小资源档 | 已确认 | 不扩容 Multipass；Caddy `128MiB/256MiB`、PostgreSQL `512MiB/768MiB`、Redis `256MiB/512MiB`、Sub2API `512MiB/2GiB`（reservation/hard limit），`GOMEMLIMIT=1536MiB`；只验证功能、调度、限额与 OOM/重启语义，不以本地结果验收生产容量，也不下调生产基线 |

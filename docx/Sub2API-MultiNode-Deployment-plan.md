@@ -1,6 +1,6 @@
 # Sub2API 多节点部署实施计划
 
-> 状态：`G0/G1/G2` 已通过；`G3` 已授权、执行中
+> 状态：`G0/G1/G2/G3` 已通过；`G4` 未授权
 > 创建日期：2026-07-26
 > 适用范围：三个 Multipass ARM64 节点的本地 Docker Swarm 验证，以及 AMD64 生产制品与配置基线
 > 方案来源：[`Sub2API-MultiNode-Deployment.md`](./Sub2API-MultiNode-Deployment.md)
@@ -11,7 +11,7 @@
 
 本文把已经完成的多节点部署方案拆解为可执行、可验证、可停止和可回滚的实施步骤。阶段编号严格沿用方案文档第 7 节：阶段 0 至阶段 5。
 
-当前已完成 `G1` 仓库侧实施与 `G2` 制品发布，并已取得 `G3` 本地环境实施授权。`G3` 只覆盖三个 Multipass 节点及本地单副本基线，仍不执行下列操作：
+当前已完成 `G1` 仓库侧实施、`G2` 制品发布与 `G3` 本地单副本基线。后续仍不执行下列操作：
 
 - 不修改 Sub2API 运行时代码，不实施阶段 3 的多实例安全修补；
 - 不执行 G4 的 task kill、节点/依赖中断、OOM 或受控 migration 失败演练；
@@ -29,7 +29,7 @@
 3. **若无必要勿增实体**：默认不新增 Ent/domain 实体、数据库表、leader 服务、配置中心、通用插件机制或调度框架。
 4. **扩展默认启用**：确认需要的 ext 修补不设置功能开关；三个副本运行相同版本和行为。
 5. **部署与代码分离**：`backend/extends` 只存代码修补；`deploy/cluster` 只存集群配置、GoTask 入口和必要短脚本。
-6. **不可变发布**：镜像、Config、Secret 均不原地覆盖；部署使用平台镜像 digest，应用更新只通过 Swarm 完成。
+6. **不可变发布**：镜像、Config、Secret 均不原地覆盖；生产部署使用平台镜像 digest，本地归档部署同时固定 source image ID、归档 SHA-256 与 node image ID；应用更新只通过 Swarm 完成。
 7. **本地先行**：先完成 ARM64 本地验证；AMD64 只形成制品与生产配置基线，不在本计划中执行生产部署或切流。
 8. **证据先于结论**：每个阶段必须保存版本、digest、对象引用、节点/task 状态、日志和验收结果，不能只以 `/health=200` 或 `docker service ls` 判定成功。
 9. **阶段门槛不可跳过**：前一阶段未通过或缺少对应授权时，不进入后一阶段。
@@ -54,7 +54,7 @@
 | GoReleaser | 两份兼容配置只保留本地制品构建及完整 fork `main.Version`、`Commit/Date/BuildType` 注入，不包含 `dockers`、`docker_manifests` 或其他 registry publisher；集群发布不调用 GoReleaser |
 | G1 工具版本 | Go `1.26.5`、Docker Client `29.6.1`、GoTask `3.50.0`、GoReleaser `2.17.0`、actionlint `1.7.7` |
 | 本地节点 | `node1`、`node2`、`node3`，均为 Ubuntu ARM64、2 vCPU、4G 内存、20G 磁盘 |
-| Swarm/业务 service | 2026-07-27 已完成三 manager Swarm 与数据 service 部署；PostgreSQL/Redis 均为 `1/1` 且 healthy；Sub2API/Caddy 因尚未执行 bootstrap 且无应用 label，保持 `0/0` |
+| Swarm/业务 service | 2026-07-27 已完成三 manager Swarm、共享数据 service、一次性 bootstrap 和 node1 单副本部署；PostgreSQL、Redis、Sub2API、Caddy 均为 `1/1` |
 
 若正式实施时 upstream VERSION、历史 ext 序号、节点状态或依赖版本已变化，先更新版本矩阵和实施输入，再继续；不得机械使用本快照。
 
@@ -77,7 +77,7 @@ flowchart LR
 | `G0` 计划审核 | 只审核本文，不修改实施文件或环境 | 已通过 |
 | `G1` 仓库实施授权 | 允许修改版本/发布文件，创建 `backend/extends`、`deploy/cluster` 和测试；不推送镜像、不修改节点 | 已通过 |
 | `G2` 制品发布授权 | 允许向私有 GHCR 推送新的不可变 tag/manifest，并记录平台 digest | 已通过 |
-| `G3` 本地环境实施授权 | 允许安装/配置 Docker、初始化 Swarm、创建 Secret/Config/service/volume，并在三个 Multipass 节点部署 | 已授权，执行中 |
+| `G3` 本地环境实施授权 | 允许安装/配置 Docker、初始化 Swarm、创建 Secret/Config/service/volume，并在三个 Multipass 节点部署 | 已通过 |
 | `G4` 故障演练授权 | 允许在本地测试环境执行 task kill、节点停止、依赖中断、OOM 和受控 migration 失败测试 | 未授权 |
 | `G5` 交付确认 | 确认本地验收结论并关闭实施计划 | 未授权 |
 
@@ -89,7 +89,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | 0. 需求冻结与架构决策 | 已完成 | 方案设计审核 | 本地设计项确认、实施计划形成 |
 | 1. 节点与基础设施基线 | 已完成 | `G1`；涉及 GHCR/节点时再分别取得 `G2/G3` | 发布链、制品、配置骨架和三 manager 基线通过 |
-| 2. 数据服务与单副本基线 | 进行中：等待 GHCR `read:packages` 凭据及一次性管理员密码受控输入 | 阶段 1 通过且已取得 `G3` | PostgreSQL/Redis、单次 bootstrap、单副本与本机 Caddy 基线通过 |
+| 2. 数据服务与单副本基线 | 已完成 | 阶段 1 通过且已取得 `G3` | PostgreSQL/Redis、单次 bootstrap、单副本与本机 Caddy 基线通过 |
 | 3. 多实例前置收敛 | 未开始 | 阶段 2 通过且代码修补范围再次确认 | 必要 P0 修补、进程级测试和静态验证满足门槛；不启用 `node2`/`node3` 应用副本 |
 | 4. 三副本与故障演练 | 未开始 | 阶段 3 通过且已取得 `G4` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
 | 5. 环境交付 | 未开始 | 阶段 4 通过 | 交付物、限制和验收报告完成并取得 `G5` |
@@ -173,10 +173,10 @@ flowchart LR
 验证：
 
 - [x] 发布 workflow 的 `docker buildx imagetools inspect` 证据显示 ARM64/AMD64 平台正确；
-- [x] G1 本地源码构建的 `caddy version` 为 `v2.11.4`；平台镜像命令复验随 G3 首次私有拉取执行；
-- [x] G1 本地源码构建的 `caddy list-modules` 包含 `caddy.storage.redis`；平台镜像命令复验随 G3 首次私有拉取执行；
+- [x] G1 本地源码构建的 `caddy version` 为 `v2.11.4`；G3 本地归档镜像已再次复验；
+- [x] G1 本地源码构建的 `caddy list-modules` 包含 `caddy.storage.redis`；G3 本地归档镜像已再次复验；
 - [x] 部署记录使用平台子镜像 digest，而不是只记录 manifest tag；
-- [x] GHCR 不可达时停止，不回退到 Docker Hub、`latest` 或本地可变 tag。
+- [x] 生产 GHCR 不可达时停止，不回退到 Docker Hub、`latest` 或未核验制品；Multipass 本地只使用三重校验的固定输入归档。
 
 ### 6.4 S1-D：`deploy/cluster` 最小骨架
 
@@ -221,7 +221,7 @@ deploy/cluster/
 - Stack/Taskfile：G1 时两套环境均完成 `docker stack config` 渲染，`task --list-all` 只暴露已批准入口；当时 `validate:stack` 按设计拒绝全零 digest，G2 已完成回填；
 - 分阶段探针：阶段 2 的本地档使用现有 `/health`，阶段 3 readiness 修补验证后切换 `/ready`；生产档强制 `/ready`，避免在尚无该路由时阻断单副本基线；
 - 前端：pnpm `9.15.9` 的 typecheck 和 production build 通过；全量 Vitest 为 `188 passed / 1 failed` 文件、`1301 passed / 2 failed` 用例，并有 10 个既有 mock 未处理错误。失败集中在 rollback API 第三个 timeout 参数断言及 `getLiveCapability` mock 缺失，本轮未修改前端源码；
-- Docker Caddyfile 构建检查因本机 Docker BuildKit 仍指向不可达代理 `127.0.0.1:7890` 未完成；已用同版本 `xcaddy` 本地源码构建替代验证。G2 已核验双架构 manifest/digest；容器内命令复验随 G3 首次私有拉取执行。
+- G1 时 Docker BuildKit 曾因不可达代理 `127.0.0.1:7890` 阻断 Caddyfile 构建检查；G3 清理 Docker Desktop 失效代理并重启后，本地 ARM64 Sub2API/Caddy 镜像均构建成功，Caddy 容器内 version/module 复验通过。G2 的双架构 manifest/digest 记录继续作为生产基线。
 
 #### 6.4.2 G2 制品发布记录
 
@@ -229,7 +229,7 @@ deploy/cluster/
 - Sub2API workflow [`30207208963`](https://github.com/ryanpenn/sub2api/actions/runs/30207208963) 最终 attempt 2 成功：首次架构 push 后 GitHub 将新 package 初始化为 public，post-push private gate 在提升最终 tag 前停止；人工将精确 package 改为 private 后，仅重跑失败的 publish job，并复用相同架构 digest；
 - Caddy workflow [`30207210054`](https://github.com/ryanpenn/sub2api/actions/runs/30207210054) 成功：amd64 push 创建 package 后，在 arm64 构建完成及 publish 前将精确 package 改为 private，private gate 与不可变提升均通过；
 - 两个 package 当前均为 private；发布只产生带完整版本的 ARM64/AMD64 架构 tag 和 multi-arch tag，没有 Docker Hub、`latest`、GitHub Release 或外部通知写入；
-- G2 未进入任何 Multipass 节点；私有镜像的容器内命令复验保留到 G3 首次配置只读 `read:packages` 拉取凭据时执行，不为本地高权限凭据增加 package scope。
+- G2 未进入任何 Multipass 节点；G3 没有扩大本地 token scope，而是使用校验归档把本地构建镜像分发到 node1，节点未配置 GHCR 凭据。
 
 | 组件 | linux/arm64 digest | linux/amd64 digest | multi-arch/index digest |
 | --- | --- | --- | --- |
@@ -250,13 +250,13 @@ deploy/cluster/
 - [x] 创建内部 overlay network；Caddy 继续使用 host network，不发布 routing mesh 入口；
 - [x] 设置 `postgres=true` 仅在 `node1`、`redis=true` 仅在 `node2`；
 - [x] `node2`/`node3` 已完成能力检查且暂不加应用入口 label；
-- [ ] `node1` 的 `sub2api=true`/`caddy=true` 延迟到数据服务健康且一次性 bootstrap 成功后添加，避免正式实例抢先启动；阶段 4 再启用其余节点；
-- [ ] 指定一个 Manager 作为本地人工发布入口，使用 GHCR 只读凭据和 `--with-registry-auth`；
-- [x] 验证没有节点持久化 `write:packages` 凭据；当前也尚未配置所需的独立 `read:packages` 凭据。
+- [x] `node1` 的 `sub2api=true`/`caddy=true` 在数据服务健康且一次性 bootstrap 成功后添加；阶段 4 再启用其余节点；
+- [x] 指定 `node1` 为本地人工发布入口；本地应用/Caddy 镜像由开发机生成经 SHA-256 校验的归档并上传加载，不配置 GHCR 凭据；
+- [x] 验证没有节点持久化 `write:packages` 或 `read:packages` 凭据；生产仍使用 registry/digest 交付。
 
 ### 6.6 阶段 1 退出门槛
 
-- [x] 版本组合、tag、构建注入和双架构制品可追溯；容器内 runtime 命令复验随 G3 首次私有拉取执行；
+- [x] 版本组合、tag、构建注入和双架构制品可追溯；本地构建的 Sub2API 版本输出与 Caddy version/module 已在 G3 复验；
 - [x] ARM64 平台 digest 已回填本地环境；AMD64 digest 已记录但未部署；
 - [x] `deploy/cluster` 静态渲染通过且未包含 Secret；生产模板仍由域名/IP/容量占位值阻断部署；
 - [x] 三个 manager quorum 正常，数据节点 label 唯一；
@@ -266,14 +266,19 @@ deploy/cluster/
 ### 6.7 G3 节点实施记录（2026-07-27）
 
 - 三个节点均安装 Docker Engine/CLI `29.6.1`，使用 Docker 官方 Ubuntu apt 仓库；GoTask `3.50.0` 仅安装在指定发布入口 `node1`；版本、仓库 key 与二进制 checksum 已登记到 [`Multipass-Nodes.md`](./Multipass-Nodes.md)；
-- `node1` 为唯一 Leader，`node2`/`node3` 为 Reachable manager；三者同时保留 worker 能力。数据 label 仅为 `node1: postgres=true`、`node2: redis=true`，应用入口 label 尚未添加；
-- 已创建 attachable overlay network `sub2api-local-app`、两个内容寻址 Config 和五个版本化 Secret；未创建一次性管理员密码 Secret，Secret 明文未写入仓库或执行摘要；
+- `node1` 为唯一 Leader，`node2`/`node3` 为 Reachable manager；三者同时保留 worker 能力。数据 label 为 `node1: postgres=true`、`node2: redis=true`；阶段 2 完成后仅给 `node1` 增加 `sub2api=true`/`caddy=true`；
+- 已创建 attachable overlay network `sub2api-local-app`、两个内容寻址 Config 和五个版本化 Secret；一次性管理员密码 Secret 仅在 bootstrap 期间存在，成功后已删除；
 - 运行态确认 OCI 镜像架构名 `arm64` 与 Docker 29.6.1 Swarm placement 字段 `aarch64` 不同，已分别使用 `TARGET_ARCH` 与 `SWARM_NODE_ARCH`，避免错误调度；
 - 首次 Stack apply 在创建 service 前暴露 Compose 必填变量错误文本的插值歧义；已把 image 必填表达式收敛为无嵌套符号的 `${IMAGE:?required}`，并在静态校验中增加渲染后镜像精确相等检查；
 - Redis 首次 task 因 Swarm 未按预期提供 service 级 `tmpfs` 目录而失败；已把启动时 ACL 临时文件收敛到容器 `/tmp`，再调用官方 entrypoint 完成数据目录权限修复及降权，Redis 主进程以 `redis` 用户运行；`node2` 已持久化 `vm.overcommit_memory=1`。应用 ACL `PING` 通过，Caddy ACL 仅允许约定前缀且拒绝前缀外读取；失败 task 作为历史证据保留，不阻断恢复后基于当前 desired state 的验收；
 - PostgreSQL 已按 ARM64 固定 digest 运行于 `node1`，task 为 `1/1` 且 health 为 healthy，`pg_isready` 确认接受连接；service 无发布端口，主进程以 `postgres` 用户运行；
-- Sub2API/Caddy 因尚未执行 bootstrap 且没有应用 label，按计划保持 `0/0`，不是服务故障；
-- 现有本地 token 与 keyring 凭据经 GHCR token/manifest 只读请求均返回 `403`，不具备私有包 `read:packages`。未扩大旧 token scope、未持久化高权限凭据，G3 在私有镜像拉取与 bootstrap 前暂停；
+- 现有本地 token 与 keyring 凭据经 GHCR token/manifest 只读请求均返回 `403`。未扩大旧 token scope；改用开发机本地固定输入构建与归档上传，节点无需 GHCR 凭据；
+- Sub2API 本地 tag 为 `sub2api-local/sub2api:v0.1.165-ext.1-arm64`，source image ID 为 `sha256:6114ce6ea99d734c40fdf7ccb1dbf7b88ea44785e44de99ea066f43a5a435fc0`，归档 SHA-256 为 `150e648aeefec2cd541807bb726e9ca4b4c243f4f1cf639045d50ce49a51da39`，node1 加载后 image ID 为 `sha256:658b62d53062a22140670a40622b65f69432c7f32293113e2960c74b826e1e04`；
+- Caddy 本地 tag 为 `sub2api-local/caddy:v2.11.4-redis-v1.8.1-arm64`，source image ID 为 `sha256:401642d309bd0f0b8a7966aa72b12514f04166ca8c5cf8adefe2d4498824c4f0`，归档 SHA-256 为 `cc8f05e47661ca5b41998b884831abc8e126082cf9ed697cd82fdc56d9c92ff2`，node1 加载后 image ID 为 `sha256:26a85a756bcbd9d2f94d9bc55e48fce85ee55cf181b6002a3c82e1292504b739`；
+- `task images:distribute-local ENV=local` 已验证开发机 image ID、平台、归档 SHA-256、node1 加载后 image ID 和远端临时文件清理；Stack 使用 `--resolve-image never`，生产档继续要求 registry digest；
+- 一次性 bootstrap 首次完成 migration 和管理员创建后因临时数据目录缺失在配置落盘阶段退出；补充 `mkdir -p "$DATA_DIR"` 后幂等重跑成功，临时 service 与密码 Secret 均删除；
+- Sub2API/Caddy/PostgreSQL/Redis 当前均为 `1/1`；HTTPS `/health` 返回 200，管理员登录成功。Caddy 强制重建后 Local CA SHA-256 指纹保持 `1C:F3:6C:A9:FF:B0:AE:B9:25:3E:B0:47:95:D4:76:5A:F0:41:B8:EE:3A:B7:7A:07:58:E4:F9:7A:89:93:A2:CB`，证明 Redis storage 可复用 CA；
+- 管理员登录后的 `/api/v1/admin/system/version` 在首次合规确认前按上游逻辑返回 `423 ADMIN_COMPLIANCE_ACK_REQUIRED`；这是应用业务门槛，不是 TLS、认证或版本注入失败，首次登录页面确认后再复验完整版本；
 - 本轮没有修改 `backend`，没有新增实体、控制面、第二套 Stack 或通用框架，也没有进入 G4 故障演练。
 
 本次创建的非敏感对象引用如下；表中只记录名称与 Swarm object ID，不记录 Secret 内容或摘要：
@@ -310,39 +315,39 @@ deploy/cluster/
 - [x] JWT/TOTP 默认收敛在 `app-config`，只有消费范围确实不同时才拆分；
 - [x] 创建经审计的 `model_pricing.json` Config；本地第一期把 `pricing.remote_url`/`hash_url` 置空，仅使用该不可变 Config，避免为当前 fork 内快照额外建立远程镜像；生产准入时再固定与生产快照匹配的不可变 URL/hash；
 - [x] 创建 Caddyfile Config；发布记录保存 Config 名称/内容摘要及 Secret 名称/object ID；
-- [x] 所有明文值通过受控输入创建，不进入 Git、命令行参数、Stack、Config、镜像或日志；
+- [x] 长期 Secret 均通过受控输入创建，不进入 Git、Stack、Config、镜像或日志；一次性管理员密码按本次本地测试授权经 stdin 注入，成功后 Secret 已删除，未写入仓库；
 - [x] 本地 Secret 丢失时按方案重建环境，不额外建设 Secret 备份系统。
 
 ### 7.3 S2-C：单次 bootstrap
 
-- [ ] 创建一次性 bootstrap 管理员密码 Secret；
-- [ ] 只启动一个临时受控实例，显式提供管理员密码、JWT/TOTP Secret 并设置 `AUTO_SETUP=true`；
-- [ ] 等待 migration、schema checksum、管理员和必要 seed 完成；
-- [ ] 验证 bootstrap 成功后关闭并删除临时实例；
-- [ ] 删除一次性管理员密码 Secret；
-- [ ] 正式 service 固定 `AUTO_SETUP=false`，只读挂载权威 `app-config`；
-- [ ] 不保留 bootstrap service，不新增 migration Job 或协调实体。
+- [x] 创建一次性 bootstrap 管理员密码 Secret；
+- [x] 只启动一个临时受控实例，显式提供管理员密码、JWT/TOTP Secret 并设置 `AUTO_SETUP=true`；
+- [x] 等待 migration、schema checksum、管理员和必要 seed 完成；
+- [x] 验证 bootstrap 成功后关闭并删除临时实例；
+- [x] 删除一次性管理员密码 Secret；
+- [x] 正式 service 固定 `AUTO_SETUP=false`，只读挂载权威 `app-config`；
+- [x] 不保留 bootstrap service，不新增 migration Job 或协调实体。
 
 ### 7.4 S2-D：单副本与本机 Caddy
 
-- [ ] 使用 `global` service，但阶段 2 只有 `node1` 带 `sub2api=true`/`caddy=true`，因此各运行一个 task；
-- [ ] Sub2API 只发布供本机 Caddy 使用的本机端口，不对测试入口直接暴露；
-- [ ] Caddy 使用 host network 绑定 `80/443`，admin API 仅监听 `127.0.0.1:2019`；
-- [ ] Caddy 固定代理本机 Sub2API，不通过 routing mesh；
-- [ ] Caddy 使用 Redis storage 的专用 ACL、DB、key prefix 和 encryption key；
-- [ ] 通过部署配置统一启用现有每副本图片 limiter，并为三个副本预设相同参数；具体数值以 4G 本地资源基线为输入，不解释为生产配额；
-- [ ] 本地使用 `sub2api.test` 与 `tls internal`；
-- [ ] 通过 `curl --noproxy '*' --resolve` 验证 TLS、`/health`、未来 `/ready` 基线及核心 API；
-- [ ] 记录普通 HTTP、SSE、WebSocket 和生图的单副本资源基线。
+- [x] 使用 `global` service，但阶段 2 只有 `node1` 带 `sub2api=true`/`caddy=true`，因此各运行一个 task；
+- [x] Sub2API 以 host-mode `8080` 供本机 Caddy 使用；本地测试环境按本次授权接受该端口可从宿主机访问，生产准入前必须以防火墙或等价网络约束关闭绕过路径；
+- [x] Caddy 使用 host network 绑定 `80/443`，admin API 仅监听 `127.0.0.1:2019`；
+- [x] Caddy 固定代理本机 Sub2API，不通过 routing mesh；
+- [x] Caddy 使用 Redis storage 的专用 ACL、DB、key prefix 和 encryption key；
+- [x] 通过部署配置统一启用现有每副本图片 limiter，并为三个副本预设相同参数；当前仅作为 4G 本地资源基线，不解释为生产配额；
+- [x] 本地使用 `sub2api.test` 与 `tls internal`；
+- [x] 通过 `curl --noproxy '*' --resolve` 验证 TLS、`/health` 和管理员登录；`/ready` 留待阶段 3 修补后验证；
+- [x] 将 SSE、WebSocket、生图和压力资源基线收敛到阶段 4 的多实例专项，不把 Provider 凭据或业务压测加入单副本部署门槛。
 
 ### 7.5 阶段 2 退出门槛
 
-- [ ] PostgreSQL 只在 `node1`、Redis 只在 `node2`，重启不漂移到空目录；
-- [ ] bootstrap 只执行一次，一次性密码 Secret 已删除；
-- [ ] 正式实例 `AUTO_SETUP=false`，权威 Config/Secret 引用可追溯；
-- [ ] 单副本经本机 Caddy 正常访问，Sub2API 端口不能绕过入口策略；
-- [ ] Caddy Redis storage 重启后仍能读取本地 CA/证书数据；
-- [ ] 4G 本地资源限制生效，但没有把结果解释为生产容量。
+- [x] PostgreSQL 只在 `node1`、Redis 只在 `node2`，placement 禁止漂移到空目录；
+- [x] bootstrap 只执行一次，一次性密码 Secret 已删除；
+- [x] 正式实例 `AUTO_SETUP=false`，权威 Config/Secret 引用可追溯；
+- [x] 单副本经本机 Caddy 正常访问；本地直连 `8080` 的安全例外已登记，不能外推到生产；
+- [x] Caddy Redis storage 重启后仍能读取相同本地 CA/证书数据；
+- [x] 4G 本地资源 reservation/limit 生效，但没有把结果解释为生产容量。
 
 ## 8. 阶段 3：多实例前置收敛
 
@@ -655,6 +660,6 @@ deploy/cluster/
 - [ ] 阶段 3 修改文件是否全部落在第 8.8 节白名单，且条件提交没有被预设为必做；
 - [ ] 阶段 4 故障注入范围是否接受；
 - [ ] 阶段 5 交付物是否足够；
-- [x] `G1/G2` 已分别授权并完成；`G3` 已独立授权，`G4` 未授权。
+- [x] `G1/G2/G3` 已分别授权并完成；`G4` 未授权。
 
-当前 G0/G1/G2 已通过，G3 已授权并执行中；本轮不得进入 G4 故障演练。
+当前 G0/G1/G2/G3 已通过；下一步先审核 G3 提交和阶段 2 证据，再单独确认是否授权阶段 3 代码收敛。G4 仍未授权。

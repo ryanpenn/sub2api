@@ -46,9 +46,18 @@ multipass exec node3 -- <command>
 - 内部 overlay network 为 `sub2api-local-app`，`attachable=true`；
 - Redis 所在 `node2` 已通过 `/etc/sysctl.d/99-sub2api-redis.conf` 持久化 `vm.overcommit_memory=1`；`node1`/`node3` 当前不承载 Redis，保持系统默认值；
 - 镜像平台使用 OCI 名称 `arm64`，Docker 29.6.1 的 Swarm placement 字段实测为 `aarch64`，部署配置已分别记录；
-- `sub2api=true` 与 `caddy=true` 尚未添加；按单副本基线顺序，需等待数据服务健康且一次性 bootstrap 成功后才添加到 `node1`；
+- `sub2api=true` 与 `caddy=true` 已在一次性 bootstrap 成功后仅添加到 `node1`；`node2`/`node3` 留待阶段 4；
 - node1 的本地人工发布入口使用 GoTask `3.50.0`，ARM64 归档 SHA-256 为 `ee67e7d999a4a70711bff1946c70bf76628012c91d9be55626ee90ba976897da`。
 
-当前数据 service 状态：PostgreSQL/Redis 均按固定 ARM64 digest 运行，分别位于 `node1`/`node2`，task 均为 `1/1` 且 health 为 healthy；PostgreSQL `pg_isready` 通过且没有发布端口，Redis 通过官方 entrypoint 降权后主进程使用 `redis` 用户。Sub2API/Caddy 尚无应用 label，按阶段 2 顺序保持 `0/0`。Redis 修复前的失败 task 仅作为历史证据保留，验收以当前 desired-state task 数和健康状态为准。
+当前 service 状态：PostgreSQL/Redis 均按固定 ARM64 digest 运行，分别位于 `node1`/`node2`；Sub2API/Caddy 使用本地归档镜像运行于 `node1`；四项 service 均为 `1/1`。PostgreSQL `pg_isready` 通过且没有发布端口，Redis 通过官方 entrypoint 降权后主进程使用 `redis` 用户。Sub2API 经 Caddy 的 `https://sub2api.test/health` 返回 200，管理员登录通过；Caddy 强制重建前后 Local CA SHA-256 指纹一致。Redis 修复前和 bootstrap 首次缺少临时目录的失败 task 仅作为历史证据保留，验收以当前 desired-state task 数和健康状态为准。
+
+本地镜像身份：
+
+| 组件 | 本地 tag | 归档 SHA-256 | node1 image ID |
+| --- | --- | --- | --- |
+| Sub2API | `sub2api-local/sub2api:v0.1.165-ext.1-arm64` | `150e648aeefec2cd541807bb726e9ca4b4c243f4f1cf639045d50ce49a51da39` | `sha256:658b62d53062a22140670a40622b65f69432c7f32293113e2960c74b826e1e04` |
+| Caddy | `sub2api-local/caddy:v2.11.4-redis-v1.8.1-arm64` | `cc8f05e47661ca5b41998b884831abc8e126082cf9ed697cd82fdc56d9c92ff2` | `sha256:26a85a756bcbd9d2f94d9bc55e48fce85ee55cf181b6002a3c82e1292504b739` |
+
+本地 Stack 以 host mode 发布 Sub2API `8080` 供同节点 Caddy 访问，因此该端口也可从 Multipass 宿主机到达。本次测试环境已明确接受该安全例外；生产准入前必须通过防火墙或等价网络约束禁止绕过 Caddy。
 
 该基线只用于同一台 macOS 宿主机上的编排验证，不证明跨物理故障域高可用。

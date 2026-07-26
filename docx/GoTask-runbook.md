@@ -1,6 +1,6 @@
 # GoTask 发布与运维手册
 
-> 状态：G1/G2 已通过；G3 已授权并进入本地实施，G4 未授权
+> 状态：G1/G2/G3 已通过；G4 未授权
 > 适用范围：Sub2API Docker Swarm 本地 ARM64 验证与后续 AMD64 生产环境
 > 基线日期：2026-07-27（Asia/Shanghai）
 
@@ -12,7 +12,7 @@
 - GoTask 将校验、部署、验证、回滚和日常运维命令组合成稳定入口；
 - Docker Swarm 管理 service 的期望状态、调度、滚动更新和回滚；
 - Caddy 在每个节点固定代理本机 Sub2API，不引入 Traefik 或 routing mesh 公网分流；
-- 镜像构建/推送与集群部署分离，Manager 只部署经验证的固定 digest。
+- 镜像构建/交付与集群部署分离；生产 Manager 只部署固定平台 digest，本地 Manager 只部署已校验 source image ID、归档 SHA-256 和 node image ID 的归档镜像。
 
 GoTask 不是长驻运维平台，不承担：
 
@@ -109,6 +109,7 @@ deploy/cluster/
 ├── taskfiles/
 │   ├── validate.yml
 │   ├── release.yml
+│   ├── images.yml
 │   └── ops.yml
 ├── stacks/
 └── env/
@@ -124,6 +125,7 @@ version: '3'
 includes:
   validate: ./taskfiles/validate.yml
   release: ./taskfiles/release.yml
+  images: ./taskfiles/images.yml
   ops: ./taskfiles/ops.yml
 
 set: [errexit, nounset, pipefail]
@@ -154,7 +156,7 @@ tasks:
       - ./scripts/validate-stack.sh "{{.ENV}}"
 ```
 
-G1 已按上述契约创建根 Taskfile 和三个子 Taskfile；当前校验逻辑直接在 Taskfile 中表达，因此没有创建 `scripts/`。G2 已回填固定 digest；G3 实施仍须先创建外部 Config/Secret 并通过环境校验。
+G1 已按上述契约创建根 Taskfile 和三个基础子 Taskfile；G3 为本地归档交付增加一个职责单一的 `images.yml`，没有新增脚本目录、registry 服务或第二套 Stack。G2 已回填生产固定 digest，G3 已完成本地镜像分发、外部 Config/Secret、bootstrap 与单副本验收。
 
 ## 5. 首次部署服务
 
@@ -163,14 +165,24 @@ G1 已按上述契约创建根 Taskfile 和三个子 Taskfile；当前校验逻�
 首次部署前必须满足：
 
 - 在指定 Manager 上执行，且 Docker context、Swarm 集群标识和 Manager quorum 校验通过；
-- 已在 CI 中构建并推送与目标架构匹配的镜像；Manager 不负责编译镜像；
-- Stack 使用平台对应的固定镜像 digest，不使用 `latest` 或仅固定 tag；
+- 生产镜像已在 CI 中构建并推送；本地镜像在开发机以固定 release/commit/date 输入构建，Manager 不负责编译镜像；
+- 生产 Stack 使用平台对应的固定镜像 digest；本地 Stack 使用带完整版本的 tag，并由归档 SHA-256 与 source/node image ID 校验闭环；两者均不使用 `latest`；
 - 版本化 Swarm Config/Secret 已创建，Secret 不出现在 Git、Task 输出和命令历史中；
 - 节点 label、placement constraint、资源 reservation/limit 与目标环境一致；
 - 普通 Sub2API 副本固定 `AUTO_SETUP=false`；全新数据库仅允许一个受控 bootstrap 流程；
 - PostgreSQL、Redis、Caddy 和 Sub2API 的持久目录与备份边界已经确认。
 
 ### 5.2 本地全新部署示例
+
+先在保存已验证 ARM64 镜像的 macOS 开发机执行：
+
+```bash
+task --dir deploy/cluster images:distribute-local ENV=local
+```
+
+该任务核对本机 source image ID 和平台，生成并校验临时归档，上传到 `LOCAL_IMAGE_NODES` 后执行 `docker load`，再核对各节点 image ID 并清理临时文件。它只允许用于 `local-arm64`；生产不得改用归档分发替代 registry digest。
+
+随后在 `node1` 的 fork 根目录执行：
 
 ```bash
 cd deploy/cluster
@@ -188,7 +200,7 @@ task ops:status
 命令语义如下：
 
 1. `validate:environment` 校验 Docker context、Swarm 身份、节点架构、数据服务 label、网络和必要对象；bootstrap 前允许尚无应用 label；
-2. `validate:stack` 渲染并校验 Stack，检查固定 digest、资源约束、placement 和 Config/Secret 引用；
+2. `validate:stack` 渲染并校验 Stack；生产检查固定 digest，本地检查完整版本 tag、source/node image ID 和归档 SHA-256，并统一检查资源约束、placement 和 Config/Secret 引用；
 3. `release:plan` 只展示将要变更的 image digest、Config/Secret 版本和 service，不执行修改；
 4. 首次 `release:apply` 在尚无 `sub2api/caddy` label 时创建完整期望状态，但只调度 PostgreSQL/Redis；不另建第二套 Stack；
 5. `release:bootstrap` 仅用于全新数据库，必须显式确认；成功后删除临时 service 和一次性管理员密码 Secret，后续更新不得再次调用；

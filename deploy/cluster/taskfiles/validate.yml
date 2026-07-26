@@ -19,8 +19,22 @@ tasks:
         test "$ENVIRONMENT" = "{{.ENV}}"
         case "$SUB2API_HEALTH_PATH" in /health|/ready) ;; *) exit 1 ;; esac
         test "$(docker --context "$DOCKER_CONTEXT" context show)" = "$DOCKER_CONTEXT"
-        docker --context "$DOCKER_CONTEXT" info | grep -q 'Swarm: active'
-        docker --context "$DOCKER_CONTEXT" info | grep -q 'Is Manager: true'
+        docker --context "$DOCKER_CONTEXT" info | grep 'Swarm: active' >/dev/null
+        docker --context "$DOCKER_CONTEXT" info | grep 'Is Manager: true' >/dev/null
+
+        case "$IMAGE_DELIVERY" in
+          local-archive)
+            test "{{.ENV}}" = local
+            test "$(docker --context "$DOCKER_CONTEXT" image inspect --format '{{"{{.Id}}"}}' "$SUB2API_IMAGE")" = "$SUB2API_IMAGE_ID"
+            test "$(docker --context "$DOCKER_CONTEXT" image inspect --format '{{"{{.Id}}"}}' "$CADDY_IMAGE")" = "$CADDY_IMAGE_ID"
+            ;;
+          registry-digest)
+            ;;
+          *)
+            echo "Unsupported IMAGE_DELIVERY: $IMAGE_DELIVERY" >&2
+            exit 1
+            ;;
+        esac
 
         manager_count=$(docker --context "$DOCKER_CONTEXT" node ls --filter role=manager -q | wc -l | tr -d ' ')
         test "$manager_count" -eq 3
@@ -94,7 +108,6 @@ tasks:
 
         zero_digest='sha256:0000000000000000000000000000000000000000000000000000000000000000'
         for image in "$SUB2API_IMAGE" "$CADDY_IMAGE" "$POSTGRES_IMAGE" "$REDIS_IMAGE"; do
-          printf '%s\n' "$image" | grep -Eq '@sha256:[0-9a-f]{64}$'
           case "$rendered" in *"image: $image"*) ;; *) exit 1 ;; esac
           case "$image" in
             *"$zero_digest")
@@ -104,11 +117,46 @@ tasks:
           esac
         done
 
+        for image in "$POSTGRES_IMAGE" "$REDIS_IMAGE"; do
+          printf '%s\n' "$image" | grep -Eq '@sha256:[0-9a-f]{64}$'
+        done
+        case "$IMAGE_DELIVERY" in
+          local-archive)
+            test "{{.ENV}}" = local
+            for image_id in "$SUB2API_SOURCE_IMAGE_ID" "$SUB2API_IMAGE_ID" "$CADDY_SOURCE_IMAGE_ID" "$CADDY_IMAGE_ID"; do
+              printf '%s\n' "$image_id" | grep -Eq '^sha256:[0-9a-f]{64}$'
+            done
+            for archive_sha in "$SUB2API_IMAGE_ARCHIVE_SHA256" "$CADDY_IMAGE_ARCHIVE_SHA256"; do
+              printf '%s\n' "$archive_sha" | grep -Eq '^[0-9a-f]{64}$'
+            done
+            case "$SUB2API_IMAGE" in sub2api-local/sub2api:*) ;; *) exit 1 ;; esac
+            case "$CADDY_IMAGE" in sub2api-local/caddy:*) ;; *) exit 1 ;; esac
+            test -n "$LOCAL_IMAGE_NODES"
+            ;;
+          registry-digest)
+            for image in "$SUB2API_IMAGE" "$CADDY_IMAGE"; do
+              printf '%s\n' "$image" | grep -Eq '@sha256:[0-9a-f]{64}$'
+            done
+            ;;
+          *)
+            echo "Unsupported IMAGE_DELIVERY: $IMAGE_DELIVERY" >&2
+            exit 1
+            ;;
+        esac
+
         expected_version="$(tr -d '\r\n' < "{{.ROOT_DIR}}/../../backend/cmd/server/VERSION")-$(tr -d '\r\n' < "{{.ROOT_DIR}}/../../backend/extends/VERSION")"
         test "$SUB2API_RELEASE" = "v$expected_version"
         printf '%s\n' "$SUB2API_IMAGE_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
-        case "$SUB2API_IMAGE" in *":$SUB2API_RELEASE-$TARGET_ARCH@"*) ;; *) exit 1 ;; esac
-        case "$CADDY_IMAGE" in *"-$TARGET_ARCH@"*) ;; *) exit 1 ;; esac
+        case "$IMAGE_DELIVERY" in
+          local-archive)
+            case "$SUB2API_IMAGE" in *":$SUB2API_RELEASE-$TARGET_ARCH") ;; *) exit 1 ;; esac
+            case "$CADDY_IMAGE" in *"-$TARGET_ARCH") ;; *) exit 1 ;; esac
+            ;;
+          registry-digest)
+            case "$SUB2API_IMAGE" in *":$SUB2API_RELEASE-$TARGET_ARCH@"*) ;; *) exit 1 ;; esac
+            case "$CADDY_IMAGE" in *"-$TARGET_ARCH@"*) ;; *) exit 1 ;; esac
+            ;;
+        esac
 
         caddy_hash=$(shasum -a 256 "{{.ROOT_DIR}}/$CADDYFILE_SOURCE" | awk '{print substr($1, 1, 12)}')
         pricing_hash=$(shasum -a 256 "{{.ROOT_DIR}}/$MODEL_PRICING_SOURCE" | awk '{print substr($1, 1, 12)}')

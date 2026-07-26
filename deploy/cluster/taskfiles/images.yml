@@ -1,0 +1,46 @@
+version: '3'
+
+tasks:
+  distribute-local:
+    desc: Save reviewed ARM64 images locally and load them into selected Multipass nodes
+    requires:
+      vars:
+        - name: ENV
+          enum: [local]
+    vars:
+      ENV_FILE: '{{.ROOT_DIR}}/env/local-arm64/cluster.env'
+    cmds:
+      - |
+        test "$(uname -s)" = Darwin
+        command -v multipass >/dev/null
+        test -r "{{.ENV_FILE}}"
+        set -a
+        . "{{.ENV_FILE}}"
+        set +a
+        unset DOCKER_CONTEXT
+        test "$IMAGE_DELIVERY" = local-archive
+        test "$(docker image inspect --format '{{"{{.Id}}"}}' "$SUB2API_IMAGE")" = "$SUB2API_SOURCE_IMAGE_ID"
+        test "$(docker image inspect --format '{{"{{.Id}}"}}' "$CADDY_IMAGE")" = "$CADDY_SOURCE_IMAGE_ID"
+        test "$(docker image inspect --format '{{"{{.Architecture}}"}}' "$SUB2API_IMAGE")" = "$TARGET_ARCH"
+        test "$(docker image inspect --format '{{"{{.Architecture}}"}}' "$CADDY_IMAGE")" = "$TARGET_ARCH"
+
+        archive_dir=$(mktemp -d "${TMPDIR:-/tmp}/sub2api-local-images.XXXXXX")
+        trap 'rm -rf "$archive_dir"' EXIT
+        sub2api_archive="$archive_dir/sub2api.tar"
+        caddy_archive="$archive_dir/caddy.tar"
+        docker image save --output "$sub2api_archive" "$SUB2API_IMAGE"
+        docker image save --output "$caddy_archive" "$CADDY_IMAGE"
+        test "$(shasum -a 256 "$sub2api_archive" | awk '{print $1}')" = "$SUB2API_IMAGE_ARCHIVE_SHA256"
+        test "$(shasum -a 256 "$caddy_archive" | awk '{print $1}')" = "$CADDY_IMAGE_ARCHIVE_SHA256"
+
+        for node in $LOCAL_IMAGE_NODES; do
+          case "$node" in node[1-9]|node[1-9][0-9]) ;; *) echo "Invalid Multipass node: $node" >&2; exit 1 ;; esac
+          test "$(multipass exec "$node" -- docker info --format '{{"{{.Architecture}}"}}')" = "$SWARM_NODE_ARCH"
+          multipass transfer "$sub2api_archive" "$node:/tmp/sub2api-local-arm64.tar"
+          multipass transfer "$caddy_archive" "$node:/tmp/caddy-local-arm64.tar"
+          multipass exec "$node" -- docker image load --input /tmp/sub2api-local-arm64.tar
+          multipass exec "$node" -- docker image load --input /tmp/caddy-local-arm64.tar
+          test "$(multipass exec "$node" -- docker image inspect --format '{{"{{.Id}}"}}' "$SUB2API_IMAGE")" = "$SUB2API_IMAGE_ID"
+          test "$(multipass exec "$node" -- docker image inspect --format '{{"{{.Id}}"}}' "$CADDY_IMAGE")" = "$CADDY_IMAGE_ID"
+          multipass exec "$node" -- rm -f /tmp/sub2api-local-arm64.tar /tmp/caddy-local-arm64.tar
+        done
