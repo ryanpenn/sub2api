@@ -18,6 +18,7 @@ env:
   CADDY_SOURCE_REVISION: e2eee6a7fce366321294c9c2a79f3146891dcbdf
   CADDY_STORAGE_REDIS_VERSION: v1.8.1
   CADDY_STORAGE_REDIS_SOURCE_REVISION: 230a32809cc4016427db0c11c925d703132941b1
+  SUB2API_FORK_REVISION: 4077dd769f54e69cd8a6acec6b44ad5e322ba4d9
 
 jobs:
   preflight:
@@ -33,6 +34,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "$GITHUB_REPOSITORY" != "ryanpenn/sub2api" || "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Dispatch this workflow from ryanpenn/sub2api main" >&2
+            exit 1
+          fi
           caddy_revision=$(go mod download -json "github.com/caddyserver/caddy/v2@v$CADDY_VERSION" | jq -r '.Origin.Hash')
           storage_revision=$(go mod download -json "github.com/pberkel/caddy-storage-redis@$CADDY_STORAGE_REDIS_VERSION" | jq -r '.Origin.Hash')
           test "$caddy_revision" = "$CADDY_SOURCE_REVISION"
@@ -48,14 +53,17 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Refuse to overwrite published tags
+      - name: Refuse a completed or conflicting release
         shell: bash
         run: |
           set -euo pipefail
-          for TAG in "$IMAGE_TAG" "$IMAGE_TAG-amd64" "$IMAGE_TAG-arm64"; do
-            if docker buildx imagetools inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
-              echo "Refusing to overwrite existing image tag: $IMAGE:$TAG" >&2
-              exit 1
+          if docker buildx imagetools inspect "$IMAGE:$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing multi-architecture tag: $IMAGE:$IMAGE_TAG" >&2
+            exit 1
+          fi
+          for suffix in amd64 arm64; do
+            if docker buildx imagetools inspect "$IMAGE:$IMAGE_TAG-$suffix" >/dev/null 2>&1; then
+              echo "Found partial-release tag; publish will require an exact digest match: $IMAGE:$IMAGE_TAG-$suffix"
             fi
           done
 
@@ -71,8 +79,10 @@ jobs:
           - platform: linux/arm64
             suffix: arm64
     steps:
-      - name: Checkout
+      - name: Checkout reviewed Caddy build input
         uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SUB2API_FORK_REVISION }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -87,27 +97,58 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push architecture image
+      - name: Build and push by content digest
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: deploy/cluster/caddy
           file: deploy/cluster/caddy/Dockerfile
           platforms: ${{ matrix.platform }}
-          push: true
           provenance: false
           sbom: false
-          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ matrix.suffix }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             CADDY_VERSION=${{ env.CADDY_VERSION }}
             CADDY_SOURCE_REVISION=${{ env.CADDY_SOURCE_REVISION }}
             CADDY_STORAGE_REDIS_VERSION=${{ env.CADDY_STORAGE_REDIS_VERSION }}
             CADDY_STORAGE_REDIS_SOURCE_REVISION=${{ env.CADDY_STORAGE_REDIS_SOURCE_REVISION }}
-            SUB2API_FORK_REVISION=${{ github.sha }}
+            SUB2API_FORK_REVISION=${{ env.SUB2API_FORK_REVISION }}
 
-  manifest:
+      - name: Record architecture digest
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          set -euo pipefail
+          test "$DIGEST" != ""
+          mkdir -p "$RUNNER_TEMP/caddy-digests"
+          printf '%s\n' "$DIGEST" > "$RUNNER_TEMP/caddy-digests/$SUFFIX.digest"
+
+      - name: Upload architecture digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: caddy-digest-${{ matrix.suffix }}
+          path: ${{ runner.temp }}/caddy-digests/${{ matrix.suffix }}.digest
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout reviewed release helper
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download architecture digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: caddy-digest-*
+          path: ${{ runner.temp }}/caddy-digests
+          merge-multiple: true
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -118,12 +159,40 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create multi-architecture manifest
+      - name: Verify package remains private
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          visibility=$(gh api /users/ryanpenn/packages/container/sub2api-caddy --jq .visibility)
+          if [[ "$visibility" != "private" ]]; then
+            echo "GHCR package visibility must be private, got: $visibility" >&2
+            exit 1
+          fi
+
+      - name: Promote immutable tags and record evidence
         shell: bash
         run: |
           set -euo pipefail
-          docker buildx imagetools create \
-            --tag "$IMAGE:$IMAGE_TAG" \
-            "$IMAGE:$IMAGE_TAG-amd64" \
-            "$IMAGE:$IMAGE_TAG-arm64"
-          docker buildx imagetools inspect "$IMAGE:$IMAGE_TAG"
+          amd64_digest=$(<"$RUNNER_TEMP/caddy-digests/amd64.digest")
+          arm64_digest=$(<"$RUNNER_TEMP/caddy-digests/arm64.digest")
+          deploy/cluster/promote-ghcr-manifests.sh \
+            "$IMAGE" \
+            "$IMAGE_TAG" \
+            "$amd64_digest" \
+            "$arm64_digest" \
+            | tee release-evidence.txt
+          {
+            echo '```text'
+            cat release-evidence.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: caddy-${{ env.IMAGE_TAG }}-evidence
+          path: release-evidence.txt
+          if-no-files-found: error
+          retention-days: 90

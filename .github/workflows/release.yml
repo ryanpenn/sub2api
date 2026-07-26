@@ -1,19 +1,23 @@
-name: Release
+name: Release Sub2API Image
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g., v0.1.165-ext.1)'
+        description: 'Existing immutable tag to publish (for example, v0.1.165-ext.1)'
         required: true
         type: string
 
+concurrency:
+  group: release-sub2api-${{ inputs.tag }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write
+  contents: read
   packages: write
+
+env:
+  IMAGE: ghcr.io/ryanpenn/sub2api
 
 jobs:
   resolve-version:
@@ -21,20 +25,31 @@ jobs:
     outputs:
       fork_version: ${{ steps.version.outputs.fork_version }}
       release_tag: ${{ steps.version.outputs.release_tag }}
+      source_commit: ${{ steps.version.outputs.source_commit }}
+      source_date: ${{ steps.version.outputs.source_date }}
     steps:
-      - name: Checkout release ref
+      - name: Checkout immutable release tag
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Resolve and validate fork version
         id: version
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
+
+          if [[ "$GITHUB_REPOSITORY" != "ryanpenn/sub2api" ]]; then
+            echo "This release workflow is restricted to ryanpenn/sub2api" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Dispatch this workflow from the reviewed main branch, got: $GITHUB_REF" >&2
+            exit 1
+          fi
 
           UPSTREAM_VERSION=$(tr -d '\r\n' < backend/cmd/server/VERSION)
           EXT_VERSION=$(tr -d '\r\n' < backend/extends/VERSION)
@@ -56,6 +71,13 @@ jobs:
             exit 1
           fi
 
+          TAG_COMMIT=$(git rev-list -n 1 "$RELEASE_TAG")
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          if [[ "$TAG_COMMIT" != "$SOURCE_COMMIT" ]]; then
+            echo "Checkout commit $SOURCE_COMMIT does not match $RELEASE_TAG ($TAG_COMMIT)" >&2
+            exit 1
+          fi
+
           MAX_EXT_REVISION=0
           while IFS= read -r EXISTING_TAG; do
             [[ -z "$EXISTING_TAG" || "$EXISTING_TAG" == "$RELEASE_TAG" ]] && continue
@@ -72,88 +94,21 @@ jobs:
             exit 1
           fi
 
-          git diff --exit-code -- backend/cmd/server/VERSION backend/extends/VERSION
-          echo "fork_version=$FORK_VERSION" >> "$GITHUB_OUTPUT"
-          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "Resolved fork version: $FORK_VERSION"
+          git diff --exit-code
+          SOURCE_DATE=$(git show -s --format=%cI HEAD)
+          {
+            echo "fork_version=$FORK_VERSION"
+            echo "release_tag=$RELEASE_TAG"
+            echo "source_commit=$SOURCE_COMMIT"
+            echo "source_date=$SOURCE_DATE"
+          } >> "$GITHUB_OUTPUT"
 
-  build-frontend:
+  preflight:
+    needs: resolve-version
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout release ref
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          version: 9
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-          cache: 'pnpm'
-          cache-dependency-path: frontend/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-        working-directory: frontend
-
-      - name: Build frontend
-        run: pnpm run build
-        working-directory: frontend
-
-      - name: Upload frontend artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: frontend-dist
-          path: backend/internal/web/dist/
-          retention-days: 1
-
-  release:
-    needs: [resolve-version, build-frontend]
-    runs-on: ubuntu-latest
-    env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-    steps:
-      - name: Checkout release ref
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.resolve-version.outputs.release_tag }}
-
-      - name: Download frontend artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: frontend-dist
-          path: backend/internal/web/dist/
-
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: backend/go.mod
-          check-latest: false
-          cache-dependency-path: backend/go.sum
-
-      - name: Verify Go version
-        run: go version | grep -q 'go1.26.5'
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Login to DockerHub
-        if: ${{ env.DOCKERHUB_USERNAME != '' }}
-        uses: docker/login-action@v3
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -162,119 +117,152 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fetch tags with annotations
-        run: git fetch --tags --force
-
-      - name: Get tag message
-        id: tag_message
+      - name: Refuse a completed or conflicting release
         shell: bash
         env:
-          TAG_NAME: ${{ needs.resolve-version.outputs.release_tag }}
+          RELEASE_TAG: ${{ needs.resolve-version.outputs.release_tag }}
         run: |
           set -euo pipefail
-          echo "Processing tag: $TAG_NAME"
-          TAG_MESSAGE=$(git tag -l --format='%(contents:body)' "$TAG_NAME")
-          echo "Tag message length: ${#TAG_MESSAGE}"
-          echo "$TAG_MESSAGE" | head -10
+          if docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing multi-architecture tag: $IMAGE:$RELEASE_TAG" >&2
+            exit 1
+          fi
+          for suffix in amd64 arm64; do
+            if docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG-$suffix" >/dev/null 2>&1; then
+              echo "Found partial-release tag; publish will require an exact digest match: $IMAGE:$RELEASE_TAG-$suffix"
+            fi
+          done
+
+  build:
+    needs: [resolve-version, preflight]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            suffix: amd64
+          - platform: linux/arm64
+            suffix: arm64
+    steps:
+      - name: Checkout immutable release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve-version.outputs.release_tag }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by content digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          sbom: false
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            VERSION=${{ needs.resolve-version.outputs.fork_version }}
+            COMMIT=${{ needs.resolve-version.outputs.source_commit }}
+            DATE=${{ needs.resolve-version.outputs.source_date }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.resolve-version.outputs.fork_version }}
+            org.opencontainers.image.revision=${{ needs.resolve-version.outputs.source_commit }}
+
+      - name: Record architecture digest
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          set -euo pipefail
+          test "$DIGEST" != ""
+          mkdir -p "$RUNNER_TEMP/sub2api-digests"
+          printf '%s\n' "$DIGEST" > "$RUNNER_TEMP/sub2api-digests/$SUFFIX.digest"
+
+      - name: Upload architecture digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: sub2api-digest-${{ matrix.suffix }}
+          path: ${{ runner.temp }}/sub2api-digests/${{ matrix.suffix }}.digest
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [resolve-version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reviewed release helper
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve-version.outputs.release_tag }}
+
+      - name: Download architecture digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: sub2api-digest-*
+          path: ${{ runner.temp }}/sub2api-digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify package remains private
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          visibility=$(gh api /users/ryanpenn/packages/container/sub2api --jq .visibility)
+          if [[ "$visibility" != "private" ]]; then
+            echo "GHCR package visibility must be private, got: $visibility" >&2
+            exit 1
+          fi
+
+      - name: Promote immutable tags and record evidence
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.resolve-version.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          amd64_digest=$(<"$RUNNER_TEMP/sub2api-digests/amd64.digest")
+          arm64_digest=$(<"$RUNNER_TEMP/sub2api-digests/arm64.digest")
+          deploy/cluster/promote-ghcr-manifests.sh \
+            "$IMAGE" \
+            "$RELEASE_TAG" \
+            "$amd64_digest" \
+            "$arm64_digest" \
+            | tee release-evidence.txt
           {
-            echo "message<<EOF"
-            echo "$TAG_MESSAGE"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+            echo '```text'
+            cat release-evidence.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Set lowercase owner for GHCR
-        id: lowercase
-        shell: bash
-        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+      - name: Upload release evidence
+        uses: actions/upload-artifact@v7
         with:
-          version: '~> v2'
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_MESSAGE: ${{ steps.tag_message.outputs.message }}
-          FORK_VERSION: ${{ needs.resolve-version.outputs.fork_version }}
-          GITHUB_REPO_OWNER: ${{ github.repository_owner }}
-          GITHUB_REPO_OWNER_LOWER: ${{ steps.lowercase.outputs.owner }}
-          GITHUB_REPO_NAME: ${{ github.event.repository.name }}
-          DOCKERHUB_USERNAME: ${{ env.DOCKERHUB_USERNAME || 'skip' }}
-
-      - name: Verify VERSION files remain unchanged
-        if: ${{ always() }}
-        run: git diff --exit-code -- backend/cmd/server/VERSION backend/extends/VERSION
-
-      - name: Update DockerHub description
-        if: ${{ env.DOCKERHUB_USERNAME != '' }}
-        uses: peter-evans/dockerhub-description@v5
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ secrets.DOCKERHUB_USERNAME }}/sub2api
-          short-description: "Sub2API - AI API Gateway Platform"
-          readme-filepath: ./deploy/DOCKER.md
-
-      - name: Send Telegram Notification
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TAG_NAME: ${{ needs.resolve-version.outputs.release_tag }}
-          RELEASE_NOTES: ${{ steps.tag_message.outputs.message }}
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "Telegram credentials not configured, skipping notification"
-            exit 0
-          fi
-
-          VERSION=${TAG_NAME#v}
-          REPO="${{ github.repository }}"
-          GHCR_IMAGE="ghcr.io/${REPO,,}"
-          TAG_MESSAGE=$RELEASE_NOTES
-          # shellcheck disable=SC2001
-          TAG_MESSAGE=$(echo "$TAG_MESSAGE" | sed 's/\([_*`\[]\)/\\\1/g')
-
-          if [ ${#TAG_MESSAGE} -gt 3500 ]; then
-            TAG_MESSAGE="${TAG_MESSAGE:0:3500}..."
-          fi
-
-          MESSAGE="🚀 *Sub2API 新版本发布！*"$'\n'$'\n'
-          MESSAGE+="📦 版本号: \`${VERSION}\`"$'\n'$'\n'
-          if [ -n "$TAG_MESSAGE" ]; then
-            MESSAGE+="${TAG_MESSAGE}"$'\n'$'\n'
-          fi
-
-          MESSAGE+="🐳 *Docker 部署:*"$'\n'
-          MESSAGE+="\`\`\`bash"$'\n'
-          if [ -n "$DOCKERHUB_USERNAME" ]; then
-            DOCKER_IMAGE="${DOCKERHUB_USERNAME}/sub2api"
-            MESSAGE+="# Docker Hub"$'\n'
-            MESSAGE+="docker pull ${DOCKER_IMAGE}:${TAG_NAME}"$'\n'
-            MESSAGE+="# GitHub Container Registry"$'\n'
-          fi
-          MESSAGE+="docker pull ${GHCR_IMAGE}:${TAG_NAME}"$'\n'
-          MESSAGE+="\`\`\`"$'\n'$'\n'
-          MESSAGE+="🔗 *相关链接:*"$'\n'
-          MESSAGE+="• [GitHub Release](https://github.com/${REPO}/releases/tag/${TAG_NAME})"$'\n'
-          if [ -n "$DOCKERHUB_USERNAME" ]; then
-            MESSAGE+="• [Docker Hub](https://hub.docker.com/r/${DOCKER_IMAGE})"$'\n'
-          fi
-          MESSAGE+="• [GitHub Packages](https://github.com/${REPO}/pkgs/container/sub2api)"$'\n'$'\n'
-          MESSAGE+="#Sub2API #Release #${TAG_NAME//./_}"
-
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n \
-              --arg chat_id "${TELEGRAM_CHAT_ID}" \
-              --arg text "${MESSAGE}" \
-              '{
-                chat_id: $chat_id,
-                text: $text,
-                parse_mode: "Markdown",
-                disable_web_page_preview: true
-              }')"
+          name: sub2api-${{ needs.resolve-version.outputs.release_tag }}-evidence
+          path: release-evidence.txt
+          if-no-files-found: error
+          retention-days: 90

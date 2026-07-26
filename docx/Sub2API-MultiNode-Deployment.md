@@ -1,10 +1,10 @@
 # Sub2API 多节点部署方案
 
-> 状态：本地验证方案设计与阶段 0 已完成；阶段 1 的 G1 仓库侧实施已完成并待审核，G2/G3 未授权、未执行；生产容量细项与生产监控目标按生产准入门槛后续补齐
+> 状态：本地验证方案设计与阶段 0 已完成；阶段 1 的 G1 提交已审核，最小改造边界通过，发布面问题已按授权收敛并待复核；G2/G3 未授权、未执行；生产容量细项与生产监控目标按生产准入门槛后续补齐
 > 创建日期：2026-07-26  
 > 更新日期：2026-07-26  
 > 节点信息来源：[`Multipass-Nodes.md`](./Multipass-Nodes.md)  
-> 当前边界：G1 已生成版本/发布链、固定 Caddy 构建输入及 `deploy/cluster` 静态骨架；不推送镜像、不登录或修改节点、不创建 Swarm 对象、不部署服务、不修改 Sub2API 运行时代码、不执行数据迁移或切流
+> 当前边界：G1 已生成版本/GHCR-only 发布链、固定 Caddy 构建输入及 `deploy/cluster` 静态骨架；当前只收敛并验证静态发布配置，不创建 tag、不推送镜像、不登录或修改节点、不创建 Swarm 对象、不部署服务、不修改 Sub2API 运行时代码、不执行数据迁移或切流
 
 ## 1. 文档目的
 
@@ -153,7 +153,7 @@
 | 滚动更新可用性 | 已确认边界 | 不整体停服，通常仍有另外两个副本提供集群容量；但本机 Caddy 不跨节点转发且当前不做 DNS 摘除，被更新节点存在短暂请求失败或重连窗口，不承诺逐节点零中断 |
 | 扩展代码目录 | 已建立元数据边界 | fork 根目录 `backend/extends` 已创建，当前仅含非运行时 `VERSION`；多实例安全运行时修补尚未实施 |
 | 集群部署目录 | 已完成 G1 静态骨架 | fork 根目录 `deploy/cluster` 已创建 Stack、双环境模板、Caddyfile 和 GoTask 契约；全零 digest、占位域名及生产容量门槛会阻止未完成输入进入部署 |
-| 发布/运维入口 | 已确认 | 在 `deploy/cluster` 内使用 GoTask 提供统一命令入口；GoTask 不是长驻控制面，不承担 RBAC、Secret 存储、监控、分布式锁或审批。当前只将最小目录结构固化到文档，不创建实际 Taskfile/脚本 |
+| 发布/运维入口 | 已完成 G1 静态骨架 | 在 `deploy/cluster` 内使用 GoTask 提供统一命令入口；GoTask 不是长驻控制面，不承担 RBAC、Secret 存储、监控、分布式锁或审批。根 Taskfile、分组 Taskfile 和实际需要的 GHCR manifest 提升脚本已经创建并静态验证，但未运行任何部署或发布写操作 |
 | 原项目改动原则 | 已确认 | 遵循最小改动原则；优先新增文件，确需修改原文件时只保留最小接入改动 |
 | `extends` 目录例外 | 已确认 | ext 实现及其实现测试位于 `backend/extends`；原包私有行为与薄接入点的回归测试允许就地新增并登记为 test-only 例外，不能为了测试目录合规而导出私有 API、增加 wrapper 或重复 adapter；运行时 upstream 修改严格受第 6.8.2 节白名单约束 |
 | `extends` 接入与依赖 | 已确认 | Wire 只接入一个 `extends.ProviderSet`；server/router 只注入窄 readiness interface 并注册 `/ready`，不建设统一扩展路由器；适配代码新增文件优先；`extends` 不得反向导入 `cmd/server`、`internal/server`，原有 domain/service 不得依赖 `extends` |
@@ -697,7 +697,9 @@ Sub2API 同时设置 `GOMEMLIMIT=1536MiB`。最重的 `node1` hard limit 合计�
 | PostgreSQL | `postgres:18-alpine`，实施时固定平台 digest | ARM64 digest | 生产所用 AMD64 digest | 不使用浮动 tag 直接部署 |
 | Redis | `redis:8-alpine`，实施时固定平台 digest | ARM64 digest | 生产所用 AMD64 digest | 不使用浮动 tag 直接部署 |
 
-现有 GoReleaser 流程已经发布 ARM64/AMD64 架构 tag 并组合 multi-arch manifest。为减少上游差异，fork 保留该流程，不另建发布机制；只做必要的发布基础设施调整：只读组合 `backend/cmd/server/VERSION` 与 `backend/extends/VERSION`；校验触发 tag 严格等于 `v${FORK_VERSION}`；镜像/tag 模板显式保留前导 `v`；现有 `.github/workflows/release.yml` 不再改写、上传替换或提交任何 VERSION 文件，并固定走完整 multi-arch 发布路径；两份 GoReleaser 配置通过 `-X main.Version={{.Env.FORK_VERSION}}` 注入不带前导 `v` 的完整 fork `Version`，并继续注入 `Commit`、`Date`。`.goreleaser.simple.yaml` 仅保留兼容和一致性校验，不再作为 release workflow 的发布路径。由于 `-ext.N` 是 SemVer prerelease 标识而 fork 制品用于正式集群部署，GoReleaser 的 GitHub Release 配置显式使用 `prerelease: false`，不沿用 `auto`。Caddy 自定义镜像使用独立 package/job。multi-arch tag 用于人工查看和通用拉取，Stack 最终仍固定对应平台的子镜像 digest，不能只固定浮动 tag。
+fork 将 `.github/workflows/release.yml` 收敛为唯一的 Sub2API 集群镜像发布入口：只允许 `workflow_dispatch` 输入已经存在的完整 fork tag；只读组合 `backend/cmd/server/VERSION` 与 `backend/extends/VERSION`，并校验 tag 严格等于 `v${FORK_VERSION}`。Workflow 复用现有多阶段 Dockerfile，以固定 `VERSION/COMMIT/DATE` 分别构建 ARM64/AMD64 内容 digest；两个架构都成功且 GHCR package 仍为 private 后，才提升带完整版本的两个架构 tag 与一个 multi-arch tag。任何最终 tag 都不可覆盖；若中途只留下架构 tag，重跑仅在其 digest 与本次构建完全相同时继续，否则停止并由人工处理。发布链不创建 GitHub Release、不发布 Docker Hub、不发送外部通知，也不使用 `latest`、major 或 minor 可变 tag。
+
+两份 GoReleaser 配置只保留上游兼容和本地一致性校验：继续通过 `-X main.Version={{.Env.FORK_VERSION}}` 注入不带前导 `v` 的完整 fork `Version`，并保留 `Commit`、`Date`、`BuildType`，但禁用 GitHub Release、Docker Hub 和可变 tag；集群发布 workflow 不调用 GoReleaser，因此不存在浮动 GoReleaser 版本改变发布行为的问题。Caddy 使用独立 package 和手工 workflow，但复用同一个 digest 提升脚本，不复制发布控制逻辑。multi-arch tag 仅用于人工查看和通用拉取，Stack 最终仍固定对应平台的子镜像 digest。
 
 Caddy Redis storage 配置支持从环境变量读取密码和 encryption key，但 Docker Swarm Secret 以文件形式挂载。Caddy service 的受控 entrypoint 必须在容器内读取 `/run/secrets/caddy_redis_password`、`/run/secrets/caddy_storage_encryption_key` 后导出为环境变量，再 `exec caddy run`。Secret 内容不得进入镜像层、Stack YAML、Swarm Config、Caddyfile、命令行参数或日志。`encryption_key` 固定为 32 个字符，并由两个环境共享各自独立的值。
 
@@ -978,9 +980,9 @@ DNSPod 为生产域名配置每个应用节点公网 IP 的 A 记录，Caddy 固
 - `ghcr.io/ryanpenn/sub2api`：fork 的 Sub2API 镜像；
 - `ghcr.io/ryanpenn/sub2api-caddy`：固定 Caddy 与 Redis storage module 的自定义镜像。
 
-沿用现有 GitHub Actions + GoReleaser 主链路：workflow 使用仓库 `GITHUB_TOKEN` 推送关联 package，保留 `linux/arm64`、`linux/amd64` 架构 tag 和 multi-arch manifest。发布链只读 `backend/cmd/server/VERSION` 与 `backend/extends/VERSION`，按 `${UPSTREAM_VERSION}-${EXT_VERSION}` 计算不带前导 `v` 的 `FORK_VERSION`，并校验触发 tag 严格等于 `v${FORK_VERSION}`；tag 只是对两个文件组合结果的断言，不是版本来源。`backend/cmd/server/VERSION` 只能随 upstream merge 改变，fork 发布流程永不修改；`backend/extends/VERSION` 只由 fork 发布准备提交更新，全局独立递增且不随 upstream 重置，CI 不回写任一文件。
+使用收敛后的 GitHub Actions + Buildx digest-first 主链路：workflow 使用仓库 `GITHUB_TOKEN` 推送关联 package，保留 `linux/arm64`、`linux/amd64` 架构 tag 和 multi-arch manifest。发布链只读 `backend/cmd/server/VERSION` 与 `backend/extends/VERSION`，按 `${UPSTREAM_VERSION}-${EXT_VERSION}` 计算不带前导 `v` 的 `FORK_VERSION`，并校验手工输入的已有 tag 严格等于 `v${FORK_VERSION}`；tag 只是对两个文件组合结果的断言，不是版本来源。`backend/cmd/server/VERSION` 只能随 upstream merge 改变，fork 发布流程永不修改；`backend/extends/VERSION` 只由 fork 发布准备提交更新，全局独立递增且不随 upstream 重置，CI 不回写任一文件。
 
-两份 GoReleaser 配置必须显式增加 `-X main.Version={{.Env.FORK_VERSION}}`，继续注入 `Commit`、`Date` 和 `BuildType`，并将镜像模板调整为带 `v` 的架构 tag 与 multi-arch tag。当前版本格式中的 `-ext.N` 会被 GoReleaser `prerelease: auto` 识别为 prerelease；本 fork 的制品用于正式集群部署，因此发布配置固定为 `prerelease: false`。这些 `.github/workflows`/GoReleaser 调整属于发布治理白名单；`backend/extends/VERSION` 是 `backend/extends` 中唯一的非运行时代码元数据例外。Caddy 使用独立 package 和构建 job，不把 Caddy 二进制塞入 Sub2API 镜像，也不复制一套新的发布框架。上游一键安装器和应用内在线更新不作为集群发布入口，第一期不为其兼容 `-ext.N` 修改源码；集群只使用已验证的平台镜像 digest 发布和回滚。
+两份 GoReleaser 兼容配置必须显式保留 `-X main.Version={{.Env.FORK_VERSION}}`，继续注入 `Commit`、`Date` 和 `BuildType`，且只能包含带完整版本的 GHCR tag，并设置 `release.disable=true`。这些 `.github/workflows`/GoReleaser 调整属于发布治理白名单；`backend/extends/VERSION` 是 `backend/extends` 中唯一的非运行时代码元数据例外。Caddy 使用独立 package 和构建 job，不把 Caddy 二进制塞入 Sub2API 镜像，并与 Sub2API 复用窄 manifest 提升脚本。上游一键安装器和应用内在线更新不作为集群发布入口，第一期不为其兼容 `-ext.N` 修改源码；集群只使用已验证的平台镜像 digest 发布和回滚。
 
 拉取规则：
 
@@ -992,7 +994,7 @@ DNSPod 为生产域名配置每个应用节点公网 IP 的 A 记录，Caddy 固
 - registry credential 不进入 Git、Swarm Config、应用 Secret、镜像层或日志，轮换后重新部署 service auth；
 - GHCR 不可达时停止发布，不自动回退到 Docker Hub、`latest`、本地可变 tag 或其他未核验制品；当前不生成、不保留也不验收离线 OCI/tar 分发方案，未来只有在出现明确需求后才重新评审。
 
-本方案不改变上游现有 Docker Hub 发布能力，但不把它作为集群部署的权威镜像源；是否继续对外发布属于仓库发布策略，不是本方案待确认项。若未来仍发布同名版本，必须保证不同 registry 不会指向不同构建产物。
+本 fork 的集群发布入口不保留 Docker Hub、GitHub Release 或外部通知路径。若未来确需恢复任何对外发布面，必须先单独修改方案并取得授权，不能复用 G2 的私有 GHCR 授权。
 
 ### 6.8 二次开发与上游同步边界
 
@@ -1036,7 +1038,7 @@ Go 模块当前位于 fork 根目录下的 `backend`，服务入口、Wire 初�
 | 配置 | 已确认白名单 | 如可配置 shutdown timeout 确有需要，`internal/config/config.go` 只增加一个时长参数；不得增加 ext 功能开关。图片 limiter 复用现有配置，不新增第二套参数 |
 | 测试 | 已确认 test-only 例外 | ext 实现测试位于 `backend/extends`；原包私有行为、薄接入和生成 Wire 的回归测试就地新增并逐项登记，不为测试导出私有 API或增加包装层 |
 | 发布元数据 | 已确认白名单 | `backend/cmd/server/VERSION` 为 upstream-owned，只随 upstream merge 变化；`backend/extends/VERSION` 为 fork-owned，只保存独立递增且不重置的 `ext.N`，是 `extends` 中唯一非运行时代码例外 |
-| 发布配置 | 已确认白名单 | `.github/workflows/release.yml` 与两份 GoReleaser 配置只做双 VERSION 只读组合/tag 校验、`main.Version` 注入、带 `v` 的双架构镜像和 Caddy package 所需的最小调整；CI 禁止修改任一 VERSION 文件，不复制第二套发布框架 |
+| 发布配置 | 已确认白名单 | `.github/workflows/{release,caddy-release}.yml`、两份 GoReleaser 兼容配置和 `deploy/cluster/promote-ghcr-manifests.sh` 只做双 VERSION 只读组合/tag 校验、`main.Version` 注入、private GHCR digest-first 双架构镜像与不可变 tag 提升；CI 禁止修改任一 VERSION 文件，不创建 GitHub Release、Docker Hub/通知路径或第二套发布控制框架 |
 | 前端 | 当前不纳入 | 多实例安全修补原则上不新增产品界面；若以后证明前端改动不可避免，必须先单独审核其必要性和最小范围 |
 | 上游同步 | 已确认 | 仅人工按需发起且无固定频率；先在临时同步分支 merge `upstream/main`，验证后再进入自有 `main`；共享分支禁止 rebase/force-push；冲突由人工介入，处理方式按实际情况决定 |
 | 版本标识 | 已确认 | 采用“upstream-owned 版本 + fork-owned ext 版本”；由两个 VERSION 文件只读组合，ext 全局独立递增且不随 upstream 重置；构建时通过现有 `ldflags` 注入完整 fork `Version`、`Commit`、`Date`，部署固定镜像 digest |
@@ -1094,7 +1096,7 @@ Image tag    = v0.1.165-ext.1
 6. `main.Version` 通过 `-X main.Version={{.Env.FORK_VERSION}}` 注入且不带前导 `v`；`Commit`、`Date`、`BuildType` 继续沿用现有 `ldflags`。原始 `main.go` 已允许注入值覆盖嵌入的上游版本，无需为组合版本修改 Go 入口。
 7. Git tag、ARM64/AMD64 架构镜像 tag 和 multi-arch 镜像 tag 使用带前导 `v` 的同一 fork 版本；实际部署最终固定平台镜像 digest，不能只依赖 tag。
 8. fork 正式构建入口必须显式传入组合后的 `FORK_VERSION`。未经过正式入口、没有 `ldflags` 的裸 `go build` 允许回退并显示上游 VERSION，但不能作为发布制品。
-9. `-ext.N` 在 SemVer 中属于 prerelease 标识，但 fork 制品用于正式集群部署，因此两份 GoReleaser 配置显式使用 `prerelease: false`；集群不依赖上游一键安装器或应用内在线更新判断发布版本。
+9. `-ext.N` 在 SemVer 中属于 prerelease 标识，但 fork 制品只通过 private GHCR 集群发布入口交付；两份 GoReleaser 兼容配置禁用 GitHub Release，集群不依赖 GoReleaser prerelease 语义、上游一键安装器或应用内在线更新判断发布版本。
 10. 已发布的 fork tag 和对应镜像不得覆盖或复用；上游基线、ext 版本、fork commit、运行时版本、镜像 digest 和部署记录必须可以相互追溯。
 
 #### 6.8.6 差异审计与同步门槛
@@ -1135,6 +1137,7 @@ Image tag    = v0.1.165-ext.1
 ```text
 deploy/cluster/
 ├── Taskfile.yml
+├── promote-ghcr-manifests.sh
 ├── taskfiles/
 │   ├── validate.yml
 │   ├── release.yml
@@ -1148,6 +1151,7 @@ deploy/cluster/
 | 路径 | 职责 | 最小化约束 |
 | --- | --- | --- |
 | `Taskfile.yml` | 根入口，通过 `includes` 暴露统一命令 | 只做组合，不堆积长 Shell |
+| `promote-ghcr-manifests.sh` | 校验两个平台 digest，提升不可变架构 tag 与 multi-arch tag，并输出证据 | 只由审核后的手工 Workflow 调用；不构建镜像、不保存凭据、不执行部署，已有 tag 不一致时立即停止 |
 | `taskfiles/validate.yml` | Docker Context、Manager/quorum、节点标签/架构、资源、Secret/Config 引用、镜像 digest 与 Stack 校验 | 校验失败必须阻断发布 |
 | `taskfiles/release.yml` | `plan/apply/verify/rollback` 以及受控的单次 bootstrap | 不包含通用 `uninstall`，不新增 migration Job |
 | `taskfiles/ops.yml` | 第一期只含状态、日志和节点检查；drain/undrain 自动化延期，需要时按手册人工执行 | 对有状态 service 和节点变更必须再次校验目标 |
@@ -1229,7 +1233,7 @@ task ops:node-status
 - 固化 fork remote、分支、上游同步和冲突人工处理策略，并确认双 VERSION 文件所有权、ext 独立递增、只读组合/tag 校验及 `ldflags` 注入规则；
 - 形成明确的范围外事项和风险接受记录。
 
-进入下一阶段的门槛：本地架构、故障边界、节点角色、Config/Secret 和 migration 策略已完成人工确认，阶段 0 门槛已满足；G1 仓库侧实施已完成并待审核。G2 制品发布与 G3 节点实施仍需分别授权，当前不代表已获得镜像推送、实际安装、部署或生产切流授权。
+进入下一阶段的门槛：本地架构、故障边界、节点角色、Config/Secret 和 migration 策略已完成人工确认，阶段 0 门槛已满足；G1 提交已经审核，发布面问题已按授权收敛并待复核。G2 制品发布与 G3 节点实施仍需分别授权，当前不代表已获得镜像推送、实际安装、部署或生产切流授权。
 
 ### 阶段 1：节点与基础设施基线
 
@@ -1470,7 +1474,7 @@ task ops:node-status
 14. **不可变容器与发布入口（已确认）**：只通过固定镜像 digest 和 Swarm 更新/回滚；Caddy 阻断管理端在线更新检查、可回滚版本查询、原地更新和原地回滚入口，只保留 `/version` 展示完整 fork 版本，Sub2API 端口不对测试入口直接发布；不修改源码或新增开关。
 15. **模型价格与滚动更新（已确认）**：`model_pricing.json` 使用经审计、带摘要的 Swarm Config，远程 URL/hash 固定到对应不可变 revision；价格更新不重建镜像，使用 `parallelism: 1`、`stop-first`、`failure_action: pause` 和逐副本 `/ready` 验证。集群不整体停服，但更新节点存在短暂失败/重连窗口，当前不承诺逐节点零中断。
 16. **后台任务多实例安全（已确认证据门槛）**：Account/Proxy expiry 先验证既有条件更新/事务语义，测试通过即不改；Scheduled Test 是当前唯一明确候选，只有重复执行失败测试成立时才复用 Redis leader lock 和 PostgreSQL advisory lock 回退；协调后端均不可用时跳过，不新增 leader 实体、facade 或通用调度框架；S3 定时备份保持禁用并验证零执行。
-17. **目录分工（已确认）**：`backend/extends` 存放代码修补/扩展，`deploy/cluster` 存放集群部署方案配置；两者不得混放，本轮只记录边界而不创建目录或生成配置。
+17. **目录分工（已确认并完成 G1 静态实施）**：`backend/extends` 存放代码修补/扩展，`deploy/cluster` 存放集群部署方案配置；两者不得混放。当前已创建 VERSION 元数据边界、Stack/环境模板、GoTask 契约、Caddy 构建输入和窄 GHCR manifest 提升脚本，但未执行部署或镜像发布。
 18. **`extends` 例外（已确认）**：ext 实现及其实现测试位于 `backend/extends`；原包私有行为和薄接入点回归测试允许就地新增并登记为 test-only 例外。运行时 upstream 修改严格限于第 6.8.2 节白名单；第一期禁止 Ent/schema/migration、新实体和通用框架，禁止为了测试目录合规导出私有 API或增加包装层。
 19. **依赖方向（已确认）**：Wire 组装和 router 注册各保留一个统一薄接入点；`extends` 不导入 `cmd/server`、`internal/server`，原有 domain/service 不依赖 `extends`。
 20. **上游同步方式（已确认）**：仅人工按需发起且不设置固定频率；临时同步分支 merge `upstream/main`，验证后再进入自有 `main`；共享分支禁止 rebase/force-push；冲突人工介入，不设强制处理规范。
@@ -1488,7 +1492,7 @@ task ops:node-status
 32. **本地可观测性（已确认）**：第一期不部署 Prometheus/Grafana/Loki 等常驻组件；使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据和 PostgreSQL/Redis 原生查询，以 `request_id + node + replica` 关联链路，由 GoTask 提供只读状态、日志和采样命令并形成验收记录。生产指标后端、日志集中化、保留期、告警阈值、值班和升级流程纳入生产准入前的“容量与可观测性补充方案”，当前不预设技术选型。
 33. **Swarm 节点角色（已确认）**：`node1`、`node2`、`node3` 固定作为 manager 并保留 worker 能力，以维持三个 manager 的 quorum 并演练单 manager 故障；后续容量扩展节点全部只作为 worker 加入，不把 manager 扩展到 3 个以上。原 manager 永久失效时从合格 worker 中晋升替代节点，只恢复到三个 manager。
 34. **实施产物（生成或构建后回填）**：ARM64/AMD64 最终平台镜像 digest。该项是阶段 1 制品，不再作为架构设计待确认项。
-35. **下一步授权**：本地设计与 G1 静态实施已完成。下一步先审核 G1 产物，再分别决定是否授权 G2 发布不可变双架构制品、G3 修改本地节点；两项互不隐含，当前均未授权。
+35. **下一步授权**：本地设计与 G1 静态实施已完成；G1 首次审核发现的发布面问题已经按授权收敛，下一步先复核收敛结果，再分别决定是否授权 G2 发布不可变双架构制品、G3 修改本地节点；两项互不隐含，当前均未授权。
 
 ## 10. 计划产物
 
@@ -1573,6 +1577,7 @@ task ops:node-status
 | 2026-07-26 | 后台任务按失败证据治理 | 已确认证据门槛 | Account/Proxy expiry 验证通过即不改；Scheduled Test 重复执行失败测试成立时才复用 Redis leader lock 与 PostgreSQL advisory lock 回退；不新增 leader 实体、facade 或调度框架 |
 | 2026-07-26 | 代码修补与集群配置分目录存放 | G1 已实施 | `backend/extends` 当前仅存 fork VERSION；`deploy/cluster` 已存放 Stack、Caddy、双环境模板和 GoTask 契约，未混入业务修补代码 |
 | 2026-07-26 | 使用 GoTask 作为薄发布/运维入口 | G1 已实施并静态验证 | 位于 `deploy/cluster`，只编排 `validate/release/ops` 和受控 bootstrap；未创建空脚本、未引入新控制面/实体，也未采用参考项目的 Traefik、Docker Socket、local ACME volume 或可变 tag |
+| 2026-07-26 | 收敛 G2 发布面但不执行发布 | G1 审核修正待复核 | Sub2API/Caddy 仅保留手工 private GHCR digest-first 发布；不创建 GitHub Release、不发布 Docker Hub、不发送通知、不使用可变 tag；部分发布只按相同 digest 恢复，输出平台 digest 证据；G2/G3 仍未授权 |
 | 2026-07-26 | 原项目遵循最小改动且新增文件优先 | 已确认 | 修改已有文件只允许保留必要的薄接入逻辑 |
 | 2026-07-26 | 并发槽采用原文件直接最小修补 | 已确认 | 删除 `internal/service/wire.go` 的破坏性启动清理调用，继续使用现有 TTL/索引 worker；不创建 ext concurrency 包装层 |
 | 2026-07-26 | 测试遵循实现就近原则 | 已确认 | ext 实现测试位于 `backend/extends`；原包私有行为和薄接入回归测试允许就地新增并登记 test-only 例外，不为目录合规导出 API |
