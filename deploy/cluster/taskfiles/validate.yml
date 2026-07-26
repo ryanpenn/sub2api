@@ -1,0 +1,122 @@
+version: '3'
+
+tasks:
+  environment:
+    desc: Validate Docker context, three-manager quorum, labels and external objects
+    requires:
+      vars:
+        - name: ENV
+          enum: [local, production]
+    vars:
+      PROFILE: '{{if eq .ENV "local"}}local-arm64{{else}}production-amd64{{end}}'
+      ENV_FILE: '{{.ROOT_DIR}}/env/{{.PROFILE}}/cluster.env'
+    cmds:
+      - |
+        test -r "{{.ENV_FILE}}"
+        set -a
+        . "{{.ENV_FILE}}"
+        set +a
+        test "$ENVIRONMENT" = "{{.ENV}}"
+        case "$SUB2API_HEALTH_PATH" in /health|/ready) ;; *) exit 1 ;; esac
+        test "$(docker --context "$DOCKER_CONTEXT" context show)" = "$DOCKER_CONTEXT"
+        docker --context "$DOCKER_CONTEXT" info | grep -q 'Swarm: active'
+        docker --context "$DOCKER_CONTEXT" info | grep -q 'Is Manager: true'
+
+        manager_count=$(docker --context "$DOCKER_CONTEXT" node ls --filter role=manager -q | wc -l | tr -d ' ')
+        test "$manager_count" -eq 3
+        docker --context "$DOCKER_CONTEXT" node ls --filter role=manager | awk 'NR > 1 && $3 != "Ready" {exit 1}'
+
+        for label in sub2api caddy; do
+          node_ids=$(docker --context "$DOCKER_CONTEXT" node ls --filter "node.label=$label=true" -q)
+          test -n "$node_ids"
+          for node_id in $node_ids; do
+            architecture=$(docker --context "$DOCKER_CONTEXT" node inspect --format '{{"{{.Description.Platform.Architecture}}"}}' "$node_id")
+            test "$architecture" = "$TARGET_ARCH"
+          done
+        done
+
+        postgres_nodes=$(docker --context "$DOCKER_CONTEXT" node ls --filter node.label=postgres=true -q)
+        redis_nodes=$(docker --context "$DOCKER_CONTEXT" node ls --filter node.label=redis=true -q)
+        test "$(printf '%s\n' "$postgres_nodes" | sed '/^$/d' | wc -l | tr -d ' ')" -eq 1
+        test "$(printf '%s\n' "$redis_nodes" | sed '/^$/d' | wc -l | tr -d ' ')" -eq 1
+        test "$postgres_nodes" != "$redis_nodes"
+
+        docker --context "$DOCKER_CONTEXT" network inspect "$APP_NETWORK_NAME" >/dev/null
+        for config_name in "$CADDYFILE_CONFIG" "$MODEL_PRICING_CONFIG"; do
+          docker --context "$DOCKER_CONTEXT" config inspect "$config_name" >/dev/null
+        done
+        for secret_name in \
+          "$APP_CONFIG_SECRET" \
+          "$POSTGRES_PASSWORD_SECRET" \
+          "$REDIS_APP_PASSWORD_SECRET" \
+          "$REDIS_CADDY_PASSWORD_SECRET" \
+          "$CADDY_STORAGE_KEY_SECRET"; do
+          docker --context "$DOCKER_CONTEXT" secret inspect "$secret_name" >/dev/null
+        done
+
+  stack:
+    desc: Render and validate immutable images, resources and Config/Secret references
+    requires:
+      vars:
+        - name: ENV
+          enum: [local, production]
+    vars:
+      PROFILE: '{{if eq .ENV "local"}}local-arm64{{else}}production-amd64{{end}}'
+      ENV_FILE: '{{.ROOT_DIR}}/env/{{.PROFILE}}/cluster.env'
+      STACK_FILE: '{{.ROOT_DIR}}/stacks/sub2api.yml'
+    cmds:
+      - |
+        test -r "{{.ENV_FILE}}"
+        set -a
+        . "{{.ENV_FILE}}"
+        set +a
+        test "$ENVIRONMENT" = "{{.ENV}}"
+
+        rendered=$(docker stack config --compose-file "{{.STACK_FILE}}")
+        printf '%s\n' "$rendered" | grep -q 'mode: global'
+        if printf '%s\n' "$rendered" | grep -Eq 'docker\.sock|:latest([@[:space:]]|$)'; then
+          echo 'Stack contains a forbidden Docker socket or latest tag' >&2
+          exit 1
+        fi
+
+        zero_digest='sha256:0000000000000000000000000000000000000000000000000000000000000000'
+        for image in "$SUB2API_IMAGE" "$CADDY_IMAGE" "$POSTGRES_IMAGE" "$REDIS_IMAGE"; do
+          printf '%s\n' "$image" | grep -Eq '@sha256:[0-9a-f]{64}$'
+          case "$image" in
+            *"$zero_digest")
+              echo "Image digest is still a G1 sentinel: $image" >&2
+              exit 1
+              ;;
+          esac
+        done
+
+        expected_version="$(tr -d '\r\n' < "{{.ROOT_DIR}}/../../backend/cmd/server/VERSION")-$(tr -d '\r\n' < "{{.ROOT_DIR}}/../../backend/extends/VERSION")"
+        test "$SUB2API_RELEASE" = "v$expected_version"
+        case "$SUB2API_IMAGE" in *":$SUB2API_RELEASE-$TARGET_ARCH@"*) ;; *) exit 1 ;; esac
+        case "$CADDY_IMAGE" in *"-$TARGET_ARCH@"*) ;; *) exit 1 ;; esac
+
+        caddy_hash=$(shasum -a 256 "{{.ROOT_DIR}}/$CADDYFILE_SOURCE" | awk '{print substr($1, 1, 12)}')
+        pricing_hash=$(shasum -a 256 "{{.ROOT_DIR}}/$MODEL_PRICING_SOURCE" | awk '{print substr($1, 1, 12)}')
+        case "$CADDYFILE_CONFIG" in *"-$caddy_hash") ;; *) exit 1 ;; esac
+        case "$MODEL_PRICING_CONFIG" in *"-$pricing_hash") ;; *) exit 1 ;; esac
+
+        for object_name in \
+          "$APP_CONFIG_SECRET" \
+          "$POSTGRES_PASSWORD_SECRET" \
+          "$REDIS_APP_PASSWORD_SECRET" \
+          "$REDIS_CADDY_PASSWORD_SECRET" \
+          "$CADDY_STORAGE_KEY_SECRET"; do
+          printf '%s\n' "$object_name" | grep -Eq '^sub2api-(local|production)-[a-z0-9-]+-v[0-9]{3}$'
+        done
+
+        grep -q 'admin 127.0.0.1:2019' "{{.ROOT_DIR}}/$CADDYFILE_SOURCE"
+        grep -q 'reverse_proxy 127.0.0.1:8080' "{{.ROOT_DIR}}/$CADDYFILE_SOURCE"
+        grep -q '/api/v1/admin/system/check-updates' "{{.ROOT_DIR}}/$CADDYFILE_SOURCE"
+        grep -q '/api/v1/admin/system/rollback-versions' "{{.ROOT_DIR}}/$CADDYFILE_SOURCE"
+
+        if [ "{{.ENV}}" = production ]; then
+          test "$SUB2API_HEALTH_PATH" = /ready
+          test "$PRODUCTION_CAPACITY_APPROVED" = true
+          case "$SUB2API_DOMAIN" in *.invalid) exit 1 ;; esac
+          case "$NODE_ADDRESSES" in *REPLACE*) exit 1 ;; esac
+        fi

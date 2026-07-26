@@ -1,6 +1,6 @@
 # GoTask 发布与运维手册
 
-> 状态：设计手册，GoTask/Stack 文件尚未生成
+> 状态：G1 仓库侧 GoTask/Stack 契约已生成并完成静态验证；G2/G3 未授权、未部署
 > 适用范围：Sub2API Docker Swarm 本地 ARM64 验证与后续 AMD64 生产环境
 > 基线日期：2026-07-26（Asia/Shanghai）
 
@@ -152,7 +152,7 @@ tasks:
       - ./scripts/validate-stack.sh "{{.ENV}}"
 ```
 
-上述只是结构示例，不代表脚本已存在。实际配置生成前，手册中的 Task 命令不可直接用于部署。
+G1 已按上述契约创建根 Taskfile 和三个子 Taskfile；当前校验逻辑直接在 Taskfile 中表达，因此没有创建 `scripts/`。这些命令已经可用于静态检查，但在取得 G2/G3、回填固定 digest 并创建外部 Config/Secret 前，不能执行实际部署。
 
 ## 5. 首次部署服务
 
@@ -189,32 +189,32 @@ task ops:status
 3. `release:plan` 只展示将要变更的 image digest、Config/Secret 版本和 service，不执行修改；
 4. `release:bootstrap` 仅用于全新数据库，必须显式确认，后续更新不得再次调用；
 5. `release:apply` 执行 `docker stack deploy` 并等待滚动更新进入稳定状态；
-6. `release:verify` 从每个节点的本机 Caddy 入口检查 `/ready`，并核对实际运行的 digest、Config/Secret 和 placement。
+6. `release:verify` 从每个节点的本机 Caddy 入口检查当前环境声明的 `SUB2API_HEALTH_PATH`，并核对实际运行的 digest、Config/Secret 和 placement；阶段 2 为 `/health`，阶段 3 readiness 验证后切换为 `/ready`。
 
 数据库 migration 仍由 Sub2API 启动过程执行，并通过 PostgreSQL advisory lock 串行化。第一期不新增独立 migration service/job，以避免引入额外实体；`bootstrap` 只负责全新数据库的首次初始化控制，不替代应用自身 migration。
 
 ### 5.3 本地逐节点验证
 
-在自动化任务尚未实现前，可使用本地 CA 对每个节点做等价检查。以下证书路径为占位符：
+在尚未取得 G3、不能执行 `release:verify` 前，可使用下列命令说明逐节点验证的等价语义。以下证书路径仍是部署后待确定的占位符：
 
 ```bash
 curl --noproxy '*' \
   --resolve sub2api.test:443:192.168.252.2 \
   --cacert <caddy-local-ca.pem> \
-  https://sub2api.test/ready
+  https://sub2api.test/health
 
 curl --noproxy '*' \
   --resolve sub2api.test:443:192.168.252.3 \
   --cacert <caddy-local-ca.pem> \
-  https://sub2api.test/ready
+  https://sub2api.test/health
 
 curl --noproxy '*' \
   --resolve sub2api.test:443:192.168.252.4 \
   --cacert <caddy-local-ca.pem> \
-  https://sub2api.test/ready
+  https://sub2api.test/health
 ```
 
-只检查 `docker service ls` 不足以判定发布成功；必须验证每个节点的真实入口、运行版本和共享依赖。
+上述命令对应阶段 2 的现有路由；阶段 3 合入 ext readiness 后将路径替换为 `/ready`。只检查 `docker service ls` 不足以判定发布成功；必须验证每个节点的真实入口、运行版本和共享依赖。
 
 ## 6. 更新与回滚
 

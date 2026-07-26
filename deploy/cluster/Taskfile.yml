@@ -1,0 +1,8 @@
+version: '3'
+
+includes:
+  validate: ./taskfiles/validate.yml
+  release: ./taskfiles/release.yml
+  ops: ./taskfiles/ops.yml
+
+set: [errexit, nounset, pipefail]

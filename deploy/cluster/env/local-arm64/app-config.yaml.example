@@ -1,0 +1,47 @@
+# 脱敏模板：替换全部 __...__ 后再作为版本化 Swarm Secret 创建，禁止提交实际值。
+server:
+  host: "0.0.0.0"
+  port: 8080
+  mode: "release"
+  trusted_proxies: ["127.0.0.1/32", "::1/128"]
+
+database:
+  host: "postgres"
+  port: 5432
+  user: "sub2api"
+  password: "__POSTGRES_PASSWORD__"
+  dbname: "sub2api"
+  sslmode: "disable"
+
+redis:
+  host: "redis"
+  port: 6379
+  username: "sub2api"
+  password: "__REDIS_APP_PASSWORD__"
+  db: 0
+  enable_tls: false
+
+jwt:
+  secret: "__JWT_SECRET__"
+  expire_hour: 24
+
+totp:
+  encryption_key: "__TOTP_ENCRYPTION_KEY__"
+
+gateway:
+  image_concurrency:
+    enabled: true
+    max_concurrent_requests: __REVIEWED_LOCAL_IMAGE_CONCURRENCY__
+    overflow_mode: "reject"
+    wait_timeout_seconds: 30
+    max_waiting_requests: 100
+
+pricing:
+  remote_url: "__PINNED_MODEL_PRICING_URL__"
+  hash_url: "__PINNED_MODEL_PRICING_HASH_URL__"
+  data_dir: "/app/data/model-pricing"
+  fallback_file: "/app/data/model-pricing/model_pricing.json"
+  update_interval_hours: 24
+  hash_check_interval_minutes: 10
+
+timezone: "Asia/Shanghai"

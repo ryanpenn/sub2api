@@ -1,0 +1,129 @@
+name: Release Caddy Image
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release-sub2api-caddy-v2.11.4-redis-v1.8.1
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/ryanpenn/sub2api-caddy
+  IMAGE_TAG: v2.11.4-redis-v1.8.1
+  CADDY_VERSION: 2.11.4
+  CADDY_SOURCE_REVISION: e2eee6a7fce366321294c9c2a79f3146891dcbdf
+  CADDY_STORAGE_REDIS_VERSION: v1.8.1
+  CADDY_STORAGE_REDIS_SOURCE_REVISION: 230a32809cc4016427db0c11c925d703132941b1
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Go for source revision verification
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          check-latest: false
+
+      - name: Verify source tags resolve to reviewed revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          caddy_revision=$(go mod download -json "github.com/caddyserver/caddy/v2@v$CADDY_VERSION" | jq -r '.Origin.Hash')
+          storage_revision=$(go mod download -json "github.com/pberkel/caddy-storage-redis@$CADDY_STORAGE_REDIS_VERSION" | jq -r '.Origin.Hash')
+          test "$caddy_revision" = "$CADDY_SOURCE_REVISION"
+          test "$storage_revision" = "$CADDY_STORAGE_REDIS_SOURCE_REVISION"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse to overwrite published tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          for TAG in "$IMAGE_TAG" "$IMAGE_TAG-amd64" "$IMAGE_TAG-arm64"; do
+            if docker buildx imagetools inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
+              echo "Refusing to overwrite existing image tag: $IMAGE:$TAG" >&2
+              exit 1
+            fi
+          done
+
+  build:
+    needs: preflight
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            suffix: amd64
+          - platform: linux/arm64
+            suffix: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push architecture image
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/cluster/caddy
+          file: deploy/cluster/caddy/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ matrix.suffix }}
+          build-args: |
+            CADDY_VERSION=${{ env.CADDY_VERSION }}
+            CADDY_SOURCE_REVISION=${{ env.CADDY_SOURCE_REVISION }}
+            CADDY_STORAGE_REDIS_VERSION=${{ env.CADDY_STORAGE_REDIS_VERSION }}
+            CADDY_STORAGE_REDIS_SOURCE_REVISION=${{ env.CADDY_STORAGE_REDIS_SOURCE_REVISION }}
+            SUB2API_FORK_REVISION=${{ github.sha }}
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-architecture manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "$IMAGE:$IMAGE_TAG" \
+            "$IMAGE:$IMAGE_TAG-amd64" \
+            "$IMAGE:$IMAGE_TAG-arm64"
+          docker buildx imagetools inspect "$IMAGE:$IMAGE_TAG"

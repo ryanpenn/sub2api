@@ -1,10 +1,10 @@
 # Sub2API 多节点部署方案
 
-> 状态：本地验证方案设计已完成，阶段 0 门槛已满足，等待阶段 1 实施授权；生产容量细项与生产监控目标按生产准入门槛后续补齐  
+> 状态：本地验证方案设计与阶段 0 已完成；阶段 1 的 G1 仓库侧实施已完成并待审核，G2/G3 未授权、未执行；生产容量细项与生产监控目标按生产准入门槛后续补齐
 > 创建日期：2026-07-26  
 > 更新日期：2026-07-26  
 > 节点信息来源：[`Multipass-Nodes.md`](./Multipass-Nodes.md)  
-> 当前边界：在本文内给出测试/生产配置基线；不安装组件、不在 `deploy/cluster` 生成可执行 Stack/Caddy/Secret 文件、不修改 Sub2API 源码、不执行数据迁移或切流
+> 当前边界：G1 已生成版本/发布链、固定 Caddy 构建输入及 `deploy/cluster` 静态骨架；不推送镜像、不登录或修改节点、不创建 Swarm 对象、不部署服务、不修改 Sub2API 运行时代码、不执行数据迁移或切流
 
 ## 1. 文档目的
 
@@ -98,7 +98,7 @@
 - 本轮实际安装 Docker Swarm 或部署任何业务服务。
 - 本轮接入 DNSPod、公网域名、TLS 或生产流量。
 - 本轮迁移现有 PostgreSQL、Redis、配置或业务数据。
-- 本轮调整已建立 fork 的 Git remote、创建 `backend/extends` 或修改任何 Sub2API 源码。
+- 本轮不调整已建立 fork 的 Git remote，也不修改任何 Sub2API 运行时代码；`backend/extends` 仅新增非运行时版本文件 `VERSION`。
 - 建设通用插件系统、可选功能市场，或增加与第 6.5 节多实例安全无关的业务功能。
 - 本轮把 PostgreSQL/Redis 扩展为高可用集群。
 - 本轮实现 DNSPod 故障节点自动摘除、秒级切换或 CLB 等价能力。
@@ -151,8 +151,8 @@
 | 模型价格快照 | 已确认 | 经审计的 `model_pricing.json` 使用版本化 Swarm Config，只读挂载到三个副本；远程数据和 hash URL 固定到与快照一致的不可变上游 revision，不跟随 `main` 漂移 |
 | 模型价格更新 | 已确认 | 创建新价格 Config 并更新 service 引用；无需重建应用镜像，以 `parallelism: 1`、`order: stop-first` 和 `failure_action: pause` 更新，发布流程逐副本验证 `/ready` |
 | 滚动更新可用性 | 已确认边界 | 不整体停服，通常仍有另外两个副本提供集群容量；但本机 Caddy 不跨节点转发且当前不做 DNS 摘除，被更新节点存在短暂请求失败或重连窗口，不承诺逐节点零中断 |
-| 扩展代码目录 | 已确认目标 | 多实例安全修补代码集中在 fork 根目录 `backend/extends`；当前目录尚未创建 |
-| 集群部署目录 | 已确认目标 | 集群部署方案配置集中在 fork 根目录 `deploy/cluster`；当前目录尚未创建，本轮不生成配置 |
+| 扩展代码目录 | 已建立元数据边界 | fork 根目录 `backend/extends` 已创建，当前仅含非运行时 `VERSION`；多实例安全运行时修补尚未实施 |
+| 集群部署目录 | 已完成 G1 静态骨架 | fork 根目录 `deploy/cluster` 已创建 Stack、双环境模板、Caddyfile 和 GoTask 契约；全零 digest、占位域名及生产容量门槛会阻止未完成输入进入部署 |
 | 发布/运维入口 | 已确认 | 在 `deploy/cluster` 内使用 GoTask 提供统一命令入口；GoTask 不是长驻控制面，不承担 RBAC、Secret 存储、监控、分布式锁或审批。当前只将最小目录结构固化到文档，不创建实际 Taskfile/脚本 |
 | 原项目改动原则 | 已确认 | 遵循最小改动原则；优先新增文件，确需修改原文件时只保留最小接入改动 |
 | `extends` 目录例外 | 已确认 | ext 实现及其实现测试位于 `backend/extends`；原包私有行为与薄接入点的回归测试允许就地新增并登记为 test-only 例外，不能为了测试目录合规而导出私有 API、增加 wrapper 或重复 adapter；运行时 upstream 修改严格受第 6.8.2 节白名单约束 |
@@ -552,7 +552,7 @@ sudo killall -HUP mDNSResponder
 | --- | --- | --- |
 | `backend/extends` 代码修补 | OAuth Redis SessionStore、最小 readiness/drain lifecycle，以及失败测试证明无法通过部署或现有机制解决的具体多实例安全缺口 | 先验证、后修补；并发槽直接删除 upstream 启动调用，不建立 ext 包装层；图片与后台任务没有失败证据时不产生代码提交；连接绑定状态保持原实现，不建设通用 leader、调度、连接或 limiter 框架 |
 | `backend/extends/VERSION` 发布元数据 | fork 自有 `ext.N` 版本；与上游 `backend/cmd/server/VERSION` 只读组合形成最终版本 | 只由 fork 发布准备提交更新，全局独立递增且不随 upstream 重置；不承载 Go 代码、运行时状态或功能开关 |
-| `deploy/cluster` 集群部署配置 | 共享 PostgreSQL/Redis、单次临时 bootstrap、版本化只读 `config.yaml` Swarm secret、经审计的模型价格 Swarm Config、统一 JWT/TOTP Secret、现有启动 migration 的串行化验证、Swarm Stack 与副本放置、Caddy 本机代理/TLS storage/原地更新阻断、容器资源限制、统一 ext 版本和固定镜像 digest，以及统一启用现有图片 limiter 和配置相同的每副本参数 | 作为集群部署配置的统一存放目录，不放业务修补代码；正式副本禁用 `AUTO_SETUP`，不新增长期 bootstrap 服务或 migration Job；模型价格通过版本化 Config 和滚动更新管理，不修改价格服务代码；应用更新只走 Swarm，不修改容器内二进制；本轮只在本文记录配置基线，不在该目录创建可执行文件 |
+| `deploy/cluster` 集群部署配置 | 共享 PostgreSQL/Redis、单次临时 bootstrap、版本化只读 `config.yaml` Swarm secret、经审计的模型价格 Swarm Config、统一 JWT/TOTP Secret、现有启动 migration 的串行化验证、Swarm Stack 与副本放置、Caddy 本机代理/TLS storage/原地更新阻断、容器资源限制、统一 ext 版本和固定镜像 digest，以及统一启用现有图片 limiter 和配置相同的每副本参数 | 作为集群部署配置的统一存放目录，不放业务修补代码；正式副本禁用 `AUTO_SETUP`，不新增长期 bootstrap 服务或 migration Job；模型价格通过版本化 Config 和滚动更新管理，不修改价格服务代码；应用更新只走 Swarm，不修改容器内二进制；G1 已生成静态配置骨架，但尚未创建任何 Swarm 对象或部署服务 |
 
 如果部署约束足以消除风险，则该事项不进入 `extends`。如果必须改代码，也应先复用现有实体、Redis、key namespace、配置和接口；若无必要不新增实体或额外抽象。
 
@@ -697,7 +697,7 @@ Sub2API 同时设置 `GOMEMLIMIT=1536MiB`。最重的 `node1` hard limit 合计�
 | PostgreSQL | `postgres:18-alpine`，实施时固定平台 digest | ARM64 digest | 生产所用 AMD64 digest | 不使用浮动 tag 直接部署 |
 | Redis | `redis:8-alpine`，实施时固定平台 digest | ARM64 digest | 生产所用 AMD64 digest | 不使用浮动 tag 直接部署 |
 
-现有 GoReleaser 流程已经发布 ARM64/AMD64 架构 tag 并组合 multi-arch manifest。为减少上游差异，fork 保留该流程，不另建发布机制；只做必要的发布基础设施调整：只读组合 `backend/cmd/server/VERSION` 与 `backend/extends/VERSION`；校验触发 tag 严格等于 `v${FORK_VERSION}`；镜像/tag 模板显式保留前导 `v`；现有 `.github/workflows/release.yml` 不再改写、上传替换或提交任何 VERSION 文件；两份 GoReleaser 配置通过 `-X main.Version={{.Env.FORK_VERSION}}` 注入不带前导 `v` 的完整 fork `Version`，并继续注入 `Commit`、`Date`。由于 `-ext.N` 是 SemVer prerelease 标识而 fork 制品用于正式集群部署，GoReleaser 的 GitHub Release 配置显式使用 `prerelease: false`，不沿用 `auto`。Caddy 自定义镜像使用独立 package/job。multi-arch tag 用于人工查看和通用拉取，Stack 最终仍固定对应平台的子镜像 digest，不能只固定浮动 tag。
+现有 GoReleaser 流程已经发布 ARM64/AMD64 架构 tag 并组合 multi-arch manifest。为减少上游差异，fork 保留该流程，不另建发布机制；只做必要的发布基础设施调整：只读组合 `backend/cmd/server/VERSION` 与 `backend/extends/VERSION`；校验触发 tag 严格等于 `v${FORK_VERSION}`；镜像/tag 模板显式保留前导 `v`；现有 `.github/workflows/release.yml` 不再改写、上传替换或提交任何 VERSION 文件，并固定走完整 multi-arch 发布路径；两份 GoReleaser 配置通过 `-X main.Version={{.Env.FORK_VERSION}}` 注入不带前导 `v` 的完整 fork `Version`，并继续注入 `Commit`、`Date`。`.goreleaser.simple.yaml` 仅保留兼容和一致性校验，不再作为 release workflow 的发布路径。由于 `-ext.N` 是 SemVer prerelease 标识而 fork 制品用于正式集群部署，GoReleaser 的 GitHub Release 配置显式使用 `prerelease: false`，不沿用 `auto`。Caddy 自定义镜像使用独立 package/job。multi-arch tag 用于人工查看和通用拉取，Stack 最终仍固定对应平台的子镜像 digest，不能只固定浮动 tag。
 
 Caddy Redis storage 配置支持从环境变量读取密码和 encryption key，但 Docker Swarm Secret 以文件形式挂载。Caddy service 的受控 entrypoint 必须在容器内读取 `/run/secrets/caddy_redis_password`、`/run/secrets/caddy_storage_encryption_key` 后导出为环境变量，再 `exec caddy run`。Secret 内容不得进入镜像层、Stack YAML、Swarm Config、Caddyfile、命令行参数或日志。`encryption_key` 固定为 32 个字符，并由两个环境共享各自独立的值。
 
@@ -793,7 +793,7 @@ resources:
   sub2api_gomemlimit: 1536MiB
 ```
 
-`node2:6379` 只为 host-network Caddy 提供 Multipass 私网端点；Redis service 仍同时接入应用 overlay network，供 Sub2API 使用 `redis:6379`。宿主机防火墙必须只允许三个节点访问该私网端口，不允许宿主机其他网络或公网访问。正式副本启动前，只运行一个临时 bootstrap 实例完成 `AUTO_SETUP`，随后关闭并将三个正式副本统一设置为 `AUTO_SETUP=false`。
+`node2:6379` 只为 host-network Caddy 提供 Multipass 私网端点；Redis service 仍同时接入应用 overlay network，供 Sub2API 使用 `redis:6379`。宿主机防火墙必须只允许三个节点访问该私网端口，不允许宿主机其他网络或公网访问。正式副本启动前，只运行一个临时 bootstrap 实例完成 `AUTO_SETUP`，随后关闭并将三个正式副本统一设置为 `AUTO_SETUP=false`。阶段 2 尚未合入 ext readiness 时，Stack 的 `SUB2API_HEALTH_PATH` 暂用现有 `/health`；阶段 3 合入并验证 readiness 后，在同一发布变更中切换为 `/ready`，不为此增加应用开关。
 
 测试环境 Caddyfile 基线：
 
@@ -885,8 +885,7 @@ caddy_storage:
   client_type: simple
   db: 1
   key_prefix: sub2api-caddy-tls
-  tls_enabled: true
-  tls_insecure: false
+  tls_enabled: false
   username: caddy_tls
 secrets:
   values: never-commit
@@ -948,8 +947,7 @@ later_externalization:
         key_prefix     "sub2api-caddy-tls"
         encryption_key "{$CADDY_STORAGE_ENCRYPTION_KEY}"
         compression    false
-        tls_enabled    true
-        tls_insecure   false
+        tls_enabled    false
     }
 }
 
@@ -969,7 +967,7 @@ later_externalization:
 
 生产 Caddy 不配置 `tls internal`，由站点域名触发公共自动 HTTPS。初期 Caddy 通过 Redis 所在节点的稳定私网 IP 访问 storage，不能使用仅存在于 overlay network 的 service name。若 Redis 使用私有 CA，还必须通过只读 Secret 挂载 CA 文件并设置 `tls_server_certs_path`；不得以 `tls_insecure true` 绕过证书校验。公网防火墙只开放每节点 Caddy `80/443`，Sub2API `8080`、PostgreSQL `5432`、Redis `6379` 和 Caddy admin `2019` 均不得公网可达。
 
-后期迁出 PostgreSQL/Redis 时，保持数据库名、Redis DB/ACL/key prefix、Secret 语义和应用配置结构不变；先完成备份、恢复、数据一致性及 Caddy TLS storage 验证，再创建新版 `config.yaml` Secret/Caddyfile Config 并滚动切换私网端点。迁出不新增 Sub2API 业务功能或 `extends` 代码。
+生产首期的集群内 Redis 与当前 Stack 一致，未配置 Redis 传输层 TLS；Caddy 通过受防火墙限制的节点私网端口连接，Redis ACL、独立 DB/key prefix 和 storage encryption key 仍然生效。此处不为 Redis TLS 新增 CA、服务端证书或额外代理。后期迁出 PostgreSQL/Redis 时，保持数据库名、Redis DB/ACL/key prefix、Secret 语义和应用配置结构不变；若独立 Redis 服务提供受信任 TLS，再先完成证书链与 Caddy storage 验证，然后创建新版 `config.yaml` Secret/Caddyfile Config 并滚动切换私网端点。迁出不新增 Sub2API 业务功能或 `extends` 代码。
 
 DNSPod 为生产域名配置每个应用节点公网 IP 的 A 记录，Caddy 固定代理本机 Sub2API；当前明确不配置故障节点自动摘除。新增节点时必须先完成镜像 digest、Secret/Config、共享依赖、`/ready` 和 TLS storage 验收，再添加 DNS A 记录，不能把“加入 Swarm”与“对公网接流量”合并为一步。
 
@@ -1002,7 +1000,7 @@ DNSPod 为生产域名配置每个应用节点公网 IP 的 A 记录，Caddy 固
 
 #### 6.8.1 已确认原则
 
-当前本文所在 fork 已完成仓库关系设置：`origin` 指向 `https://github.com/ryanpenn/sub2api.git`，`upstream` 指向 `https://github.com/Wei-Shaw/sub2api.git`；当前 `backend/cmd/server/VERSION=0.1.165`。`backend/extends`、`backend/extends/VERSION` 和 `deploy/cluster` 仍尚未创建，多实例安全修补、fork 自有版本文件和集群配置也尚未实施。因此以下内容是后续实施约束：
+当前本文所在 fork 已完成仓库关系设置：`origin` 指向 `https://github.com/ryanpenn/sub2api.git`，`upstream` 指向 `https://github.com/Wei-Shaw/sub2api.git`；当前 `backend/cmd/server/VERSION=0.1.165`、`backend/extends/VERSION=ext.1`，只读组合版本为 `0.1.165-ext.1`。G1 已创建 `backend/extends` 元数据边界与 `deploy/cluster` 静态骨架，但多实例安全运行时修补、镜像发布和节点部署均未实施。因此以下内容同时作为已完成 G1 的约束和后续阶段的实施边界：
 
 1. 保持 `origin` 指向自有 fork、`upstream` 指向原项目，避免误向原项目推送；实施前后均通过只读命令核对 remote。
 2. 仅由人工按需从 `upstream` 获取更新，不设置固定频率，也不启用定时同步或自动合并；上游同步提交与自定义功能提交分离，确保来源、冲突和回滚范围可追溯。
@@ -1231,7 +1229,7 @@ task ops:node-status
 - 固化 fork remote、分支、上游同步和冲突人工处理策略，并确认双 VERSION 文件所有权、ext 独立递增、只读组合/tag 校验及 `ldflags` 注入规则；
 - 形成明确的范围外事项和风险接受记录。
 
-进入下一阶段的门槛：本地架构、故障边界、节点角色、Config/Secret 和 migration 策略已完成人工确认，阶段 0 门槛已满足。后续仅等待阶段 1 实施授权，不代表已获得实际安装、部署或生产切流授权。
+进入下一阶段的门槛：本地架构、故障边界、节点角色、Config/Secret 和 migration 策略已完成人工确认，阶段 0 门槛已满足；G1 仓库侧实施已完成并待审核。G2 制品发布与 G3 节点实施仍需分别授权，当前不代表已获得镜像推送、实际安装、部署或生产切流授权。
 
 ### 阶段 1：节点与基础设施基线
 
@@ -1490,11 +1488,11 @@ task ops:node-status
 32. **本地可观测性（已确认）**：第一期不部署 Prometheus/Grafana/Loki 等常驻组件；使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据和 PostgreSQL/Redis 原生查询，以 `request_id + node + replica` 关联链路，由 GoTask 提供只读状态、日志和采样命令并形成验收记录。生产指标后端、日志集中化、保留期、告警阈值、值班和升级流程纳入生产准入前的“容量与可观测性补充方案”，当前不预设技术选型。
 33. **Swarm 节点角色（已确认）**：`node1`、`node2`、`node3` 固定作为 manager 并保留 worker 能力，以维持三个 manager 的 quorum 并演练单 manager 故障；后续容量扩展节点全部只作为 worker 加入，不把 manager 扩展到 3 个以上。原 manager 永久失效时从合格 worker 中晋升替代节点，只恢复到三个 manager。
 34. **实施产物（生成或构建后回填）**：ARM64/AMD64 最终平台镜像 digest。该项是阶段 1 制品，不再作为架构设计待确认项。
-35. **下一步授权**：本地设计已完成，阶段 0 门槛已满足。下一步只需确认是先生成 Stack/初始化/验收配置并做静态验证，还是同时允许实际安装和部署；当前默认停在“阶段 0 已完成、尚未授权实施”的状态。
+35. **下一步授权**：本地设计与 G1 静态实施已完成。下一步先审核 G1 产物，再分别决定是否授权 G2 发布不可变双架构制品、G3 修改本地节点；两项互不隐含，当前均未授权。
 
 ## 10. 计划产物
 
-获得阶段 1 实施授权后，按需要补充以下文件或章节：
+阶段 1 实施期间按授权门槛补充以下文件或章节；其中 G1 仓库侧静态产物已生成，镜像 digest 与节点证据仍分别等待 G2/G3：
 
 - 架构决策记录与节点角色表；
 - 网络、端口、域名和证书矩阵；
@@ -1543,7 +1541,7 @@ task ops:node-status
 | 2026-07-26 | 全新部署，暂不迁移旧数据 | 已确认 | 使用新的数据目录/卷 |
 | 2026-07-26 | 当前不处理 DNS 故障节点摘除 | 已确认 | 作为已知边界保留 |
 | 2026-07-26 | 基于原项目 fork 进行二次开发并按需同步上游 | 已确认并已建立仓库基线 | 当前 `origin` 指向 `ryanpenn/sub2api`，`upstream` 指向 `Wei-Shaw/sub2api`；同步仅由人工发起，代码修补尚未实施 |
-| 2026-07-26 | 多实例安全实现集中在 `backend/extends` | 已确认目标 | 目录尚未创建；ext 实现及其实现测试不得散落，原包私有行为和薄接入测试按 test-only 例外就地新增 |
+| 2026-07-26 | 多实例安全实现集中在 `backend/extends` | 已建立元数据边界 | 目录已创建且当前仅含 `VERSION`；运行时修补尚未实施，后续 ext 实现及其实现测试不得散落，原包私有行为和薄接入测试按 test-only 例外就地新增 |
 | 2026-07-26 | 接受 `extends` 目录白名单例外 | 已确认 | 允许必要 schema/migration/生成代码、最小注册和多实例安全参数位于既有目录；前端当前不纳入，逐项登记差异 |
 | 2026-07-26 | `extends` 采用统一接入点和单向依赖 | 已确认 | Wire/router 各一个薄接入点；适配新增文件优先；核心 domain/service 不依赖 `extends` |
 | 2026-07-26 | 上游同步采用临时分支 merge | 已确认 | 验证后合并回自有 `main`；共享分支禁止 rebase/force-push，个人未共享分支可 rebase |
@@ -1573,13 +1571,13 @@ task ops:node-status
 | 2026-07-26 | 接受滚动更新的逐节点短暂窗口 | 已确认边界 | 集群不整体停服，另外两个节点继续服务；本地 Caddy 无跨节点备用且不做 DNS 摘除，更新节点不承诺零中断 |
 | 2026-07-26 | Sub2API 容器采用不可变发布 | 已确认 | 只通过固定镜像 digest 和 Swarm 更新/回滚；Caddy 阻断在线更新检查、可回滚版本查询、原地更新和原地回滚，只保留 `/version`；不修改源码或增加开关 |
 | 2026-07-26 | 后台任务按失败证据治理 | 已确认证据门槛 | Account/Proxy expiry 验证通过即不改；Scheduled Test 重复执行失败测试成立时才复用 Redis leader lock 与 PostgreSQL advisory lock 回退；不新增 leader 实体、facade 或调度框架 |
-| 2026-07-26 | 代码修补与集群配置分目录存放 | 已确认目标 | `backend/extends` 存放代码修补/扩展，`deploy/cluster` 存放集群部署方案配置；两个目录当前均未创建 |
-| 2026-07-26 | 使用 GoTask 作为薄发布/运维入口 | 已确认方案，尚未实施 | 位于 `deploy/cluster`，只编排 `validate/release/ops`、受控 bootstrap 和必要脚本；不引入新控制面/实体，不采用参考项目的 Traefik、Docker Socket、local ACME volume 或可变 tag |
+| 2026-07-26 | 代码修补与集群配置分目录存放 | G1 已实施 | `backend/extends` 当前仅存 fork VERSION；`deploy/cluster` 已存放 Stack、Caddy、双环境模板和 GoTask 契约，未混入业务修补代码 |
+| 2026-07-26 | 使用 GoTask 作为薄发布/运维入口 | G1 已实施并静态验证 | 位于 `deploy/cluster`，只编排 `validate/release/ops` 和受控 bootstrap；未创建空脚本、未引入新控制面/实体，也未采用参考项目的 Traefik、Docker Socket、local ACME volume 或可变 tag |
 | 2026-07-26 | 原项目遵循最小改动且新增文件优先 | 已确认 | 修改已有文件只允许保留必要的薄接入逻辑 |
 | 2026-07-26 | 并发槽采用原文件直接最小修补 | 已确认 | 删除 `internal/service/wire.go` 的破坏性启动清理调用，继续使用现有 TTL/索引 worker；不创建 ext concurrency 包装层 |
 | 2026-07-26 | 测试遵循实现就近原则 | 已确认 | ext 实现测试位于 `backend/extends`；原包私有行为和薄接入回归测试允许就地新增并登记 test-only 例外，不为目录合规导出 API |
 | 2026-07-26 | upstream 修改采用显式白名单 | 已确认 | 仅允许第 6.8.2 节列出的 Wire/main/server/OAuth service/service wire/条件图片 handler 与对应测试；第一期禁止 Ent/schema/migration 和通用框架 |
-| 2026-07-26 | 本地验证方案设计完成 | 已确认 | 影响本地第一期的设计项已全部确认，阶段 0 门槛已满足；当前只修改方案文档，尚未授权生成实施文件、安装或部署 |
+| 2026-07-26 | 本地验证方案设计完成 | G0 已通过，G1 已实施 | 影响本地第一期的设计项已确认，阶段 0 门槛已满足；G1 仓库侧静态文件已生成，G2 镜像发布和 G3 节点安装/部署仍未授权 |
 | 2026-07-26 | 固定三个 Swarm manager | 已确认 | `node1`、`node2`、`node3` 均为 `manager + worker`；后续容量扩展节点仅作为 worker，不把 manager 扩展到 3 个以上；原 manager 永久失效时只晋升替代节点以恢复三个 manager |
 | 2026-07-26 | 固化 Config/Secret 命名与轮换 | 已确认 | Config 使用环境、用途和 `sha12` 内容摘要；Secret 使用环境、用途和 `vNNN`，不记录内容摘要。对象不原地覆盖，最小拆分并保留一个可用回滚版本；特殊密钥不做普通自动轮换，本地丢失时重建，生产启用前另设加密保管位置 |
 | 2026-07-26 | 固化 migration 超时、恢复与回滚边界 | 已确认 | 保留现有 10 分钟总上下文，三次全新数据库冷启动最慢不超过 5 分钟；`*_notx.sql` 只由单个受控 task 清理对应无效索引并以相同 digest 重试，不修改 migration 记录；schema 发布标记兼容性，生产 forward-only migration 必须先有已验证备份恢复方案 |

@@ -1,0 +1,255 @@
+version: '3.9'
+
+services:
+  sub2api:
+    image: ${SUB2API_IMAGE:?SUB2API_IMAGE must use a platform-specific digest}
+    environment:
+      AUTO_SETUP: 'false'
+      DATA_DIR: /app/data
+      GOMEMLIMIT: ${SUB2API_GOMEMLIMIT:?SUB2API_GOMEMLIMIT is required}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - sub2api_data:/app/data
+    configs:
+      - source: model_pricing
+        target: /app/data/model-pricing/model_pricing.json
+        uid: '1000'
+        gid: '1000'
+        mode: 0444
+    secrets:
+      - source: app_config
+        target: /app/data/config.yaml
+        uid: '1000'
+        gid: '1000'
+        mode: 0400
+    ports:
+      - target: 8080
+        published: 8080
+        protocol: tcp
+        mode: host
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080${SUB2API_HEALTH_PATH:?SUB2API_HEALTH_PATH is required}"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    stop_grace_period: 45s
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.labels.sub2api == true
+          - node.platform.arch == ${TARGET_ARCH:?TARGET_ARCH is required}
+      resources:
+        reservations:
+          memory: ${SUB2API_MEMORY_RESERVATION:?SUB2API_MEMORY_RESERVATION is required}
+        limits:
+          memory: ${SUB2API_MEMORY_LIMIT:?SUB2API_MEMORY_LIMIT is required}
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: stop-first
+        failure_action: pause
+        monitor: 30s
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+        order: stop-first
+        failure_action: pause
+        monitor: 30s
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+
+  caddy:
+    image: ${CADDY_IMAGE:?CADDY_IMAGE must use a platform-specific digest}
+    environment:
+      CADDY_REDIS_ADDRESS: ${CADDY_REDIS_ADDRESS:?CADDY_REDIS_ADDRESS is required}
+      CADDY_REDIS_USERNAME: caddy_tls
+      CADDY_REDIS_DB: '1'
+      SUB2API_DOMAIN: ${SUB2API_DOMAIN:?SUB2API_DOMAIN is required}
+      SUB2API_UPSTREAM_HEALTH_URI: ${SUB2API_HEALTH_PATH:?SUB2API_HEALTH_PATH is required}
+      TZ: ${TZ:-Asia/Shanghai}
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+        mode: 0444
+    secrets:
+      - source: redis_caddy_password
+        target: /run/secrets/caddy_redis_password
+        mode: 0400
+      - source: caddy_storage_encryption_key
+        target: /run/secrets/caddy_storage_encryption_key
+        mode: 0400
+    networks:
+      - host
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.labels.caddy == true
+          - node.platform.arch == ${TARGET_ARCH:?TARGET_ARCH is required}
+      resources:
+        reservations:
+          memory: ${CADDY_MEMORY_RESERVATION:?CADDY_MEMORY_RESERVATION is required}
+        limits:
+          memory: ${CADDY_MEMORY_LIMIT:?CADDY_MEMORY_LIMIT is required}
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: stop-first
+        failure_action: pause
+        monitor: 30s
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+        order: stop-first
+        failure_action: pause
+        monitor: 30s
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+
+  postgres:
+    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE must use a platform-specific digest}
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_USER: sub2api
+      POSTGRES_DB: sub2api
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    secrets:
+      - source: postgres_password
+        target: /run/secrets/postgres_password
+        mode: 0400
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sub2api -d sub2api"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    stop_grace_period: 60s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.postgres == true
+          - node.platform.arch == ${TARGET_ARCH:?TARGET_ARCH is required}
+      resources:
+        reservations:
+          memory: ${POSTGRES_MEMORY_RESERVATION:?POSTGRES_MEMORY_RESERVATION is required}
+        limits:
+          memory: ${POSTGRES_MEMORY_LIMIT:?POSTGRES_MEMORY_LIMIT is required}
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+
+  redis:
+    image: ${REDIS_IMAGE:?REDIS_IMAGE must use a platform-specific digest}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        umask 077
+        app_password=$$(cat /run/secrets/redis_app_password)
+        caddy_password=$$(cat /run/secrets/redis_caddy_password)
+        test -n "$$app_password"
+        test -n "$$caddy_password"
+        printf 'user default off\nuser sub2api on >%s ~* &* +@all\nuser caddy_tls on >%s ~sub2api-caddy-tls ~sub2api-caddy-tls/* +@all\n' \
+          "$$app_password" "$$caddy_password" > /run/redis/users.acl
+        exec redis-server \
+          --aclfile /run/redis/users.acl \
+          --save 60 1 \
+          --appendonly yes \
+          --appendfsync everysec
+    volumes:
+      - redis_data:/data
+    tmpfs:
+      - /run/redis
+    secrets:
+      - source: redis_app_password
+        target: /run/secrets/redis_app_password
+        mode: 0400
+      - source: redis_caddy_password
+        target: /run/secrets/redis_caddy_password
+        mode: 0400
+    ports:
+      - target: 6379
+        published: 6379
+        protocol: tcp
+        mode: host
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$(cat /run/secrets/redis_app_password) redis-cli --user sub2api ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    stop_grace_period: 30s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.redis == true
+          - node.platform.arch == ${TARGET_ARCH:?TARGET_ARCH is required}
+      resources:
+        reservations:
+          memory: ${REDIS_MEMORY_RESERVATION:?REDIS_MEMORY_RESERVATION is required}
+        limits:
+          memory: ${REDIS_MEMORY_LIMIT:?REDIS_MEMORY_LIMIT is required}
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+
+networks:
+  app:
+    external: true
+    name: ${APP_NETWORK_NAME:?APP_NETWORK_NAME is required}
+  host:
+    external: true
+    name: host
+
+volumes:
+  sub2api_data:
+  postgres_data:
+  redis_data:
+
+configs:
+  caddyfile:
+    external: true
+    name: ${CADDYFILE_CONFIG:?CADDYFILE_CONFIG is required}
+  model_pricing:
+    external: true
+    name: ${MODEL_PRICING_CONFIG:?MODEL_PRICING_CONFIG is required}
+
+secrets:
+  app_config:
+    external: true
+    name: ${APP_CONFIG_SECRET:?APP_CONFIG_SECRET is required}
+  postgres_password:
+    external: true
+    name: ${POSTGRES_PASSWORD_SECRET:?POSTGRES_PASSWORD_SECRET is required}
+  redis_app_password:
+    external: true
+    name: ${REDIS_APP_PASSWORD_SECRET:?REDIS_APP_PASSWORD_SECRET is required}
+  redis_caddy_password:
+    external: true
+    name: ${REDIS_CADDY_PASSWORD_SECRET:?REDIS_CADDY_PASSWORD_SECRET is required}
+  caddy_storage_encryption_key:
+    external: true
+    name: ${CADDY_STORAGE_KEY_SECRET:?CADDY_STORAGE_KEY_SECRET is required}

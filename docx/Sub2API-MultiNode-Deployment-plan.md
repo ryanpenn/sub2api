@@ -1,6 +1,6 @@
 # Sub2API 多节点部署实施计划
 
-> 状态：第三轮收敛意见已采纳，待最终审核；尚未授权实施
+> 状态：`G0` 已通过，`G1` 仓库侧实施已完成并待审核；`G2/G3` 未授权、未执行
 > 创建日期：2026-07-26
 > 适用范围：三个 Multipass ARM64 节点的本地 Docker Swarm 验证，以及 AMD64 生产制品与配置基线
 > 方案来源：[`Sub2API-MultiNode-Deployment.md`](./Sub2API-MultiNode-Deployment.md)
@@ -11,10 +11,9 @@
 
 本文把已经完成的多节点部署方案拆解为可执行、可验证、可停止和可回滚的实施步骤。阶段编号严格沿用方案文档第 7 节：阶段 0 至阶段 5。
 
-当前只创建实施计划，不执行下列操作：
+本轮授权只覆盖 `G1` 仓库侧实施，已经修改发布 workflow/GoReleaser 配置，并创建 `backend/extends/VERSION`、固定 Caddy 构建输入和 `deploy/cluster`。仍不执行下列操作：
 
-- 不修改 Sub2API 源码、发布 workflow 或 GoReleaser 配置；
-- 不创建 `backend/extends`、`backend/extends/VERSION` 或 `deploy/cluster`；
+- 不修改 Sub2API 运行时代码，不实施阶段 3 的多实例安全修补；
 - 不构建、推送或覆盖 GHCR 镜像/tag；
 - 不安装 Docker/GoTask，不初始化或修改 Swarm；
 - 不创建 Docker Secret/Config、网络、service、volume 或数据库；
@@ -44,14 +43,16 @@
 | 项目 | 当前状态 |
 | --- | --- |
 | fork 分支 | `main`，跟踪 `origin/main` |
-| 文档基线 commit | `36ff73e93d4850fcfacd83bd826f192d4b32cc59` |
+| G1 实施起点 commit | `74b34cec90ff0638b5d51eabbf962ff4002d0472` |
+| upstream 基线 commit | `2730c1c43b29be003925b033f3f9e645e726bb8c` |
 | upstream VERSION | `backend/cmd/server/VERSION = 0.1.165` |
-| fork VERSION | `backend/extends/VERSION` 尚不存在；计划首值为 `ext.1`，实施前仍须核对历史 fork tag |
-| 组合版本 | 计划为 `0.1.165-ext.1`，tag/镜像 tag 为 `v0.1.165-ext.1` |
-| `backend/extends` | 尚不存在 |
-| `deploy/cluster` | 尚不存在 |
-| release workflow | 仍会改写/同步 `backend/cmd/server/VERSION`，不符合已确认的双 VERSION 只读组合规则 |
-| GoReleaser | 两份配置仍为 `prerelease: auto`，尚未显式注入完整 fork `main.Version` |
+| fork VERSION | `backend/extends/VERSION = ext.1`；实施前确认历史 fork tag 为空 |
+| 组合版本 | `0.1.165-ext.1`，预期 tag/镜像 tag 为 `v0.1.165-ext.1` |
+| `backend/extends` | 已创建，仅含 `VERSION`；尚未增加任何运行时代码或新功能 |
+| `deploy/cluster` | 已创建 G1 静态骨架、通用 Stack、两套环境档、Caddyfile 和 GoTask 契约 |
+| release workflow | 已只读组合双 VERSION、校验 tag/ext 序号并固定执行完整 multi-arch 发布；不再改写或提交 VERSION |
+| GoReleaser | 两份配置已注入完整 fork `main.Version`、保留 `Commit/Date/BuildType`、使用前导 `v` 并设置 `prerelease: false` |
+| G1 工具版本 | Go `1.26.5`、Docker Client `29.6.1`、GoTask `3.50.0`、GoReleaser `2.17.0`、actionlint `1.7.7` |
 | 本地节点 | `node1`、`node2`、`node3`，均为 Ubuntu ARM64、2 vCPU、4G 内存、20G 磁盘 |
 | Swarm/业务 service | 本计划未确认当前实时状态；阶段 1 必须重新取证，不从文档推断 |
 
@@ -73,8 +74,8 @@ flowchart LR
 
 | 门槛 | 允许的动作 | 当前状态 |
 | --- | --- | --- |
-| `G0` 计划审核 | 只审核本文，不修改实施文件或环境 | 待审核 |
-| `G1` 仓库实施授权 | 允许修改版本/发布文件，创建 `backend/extends`、`deploy/cluster` 和测试；不推送镜像、不修改节点 | 未授权 |
+| `G0` 计划审核 | 只审核本文，不修改实施文件或环境 | 已通过 |
+| `G1` 仓库实施授权 | 允许修改版本/发布文件，创建 `backend/extends`、`deploy/cluster` 和测试；不推送镜像、不修改节点 | 已授权并完成，待审核 |
 | `G2` 制品发布授权 | 允许向私有 GHCR 推送新的不可变 tag/manifest，并记录平台 digest | 未授权 |
 | `G3` 本地环境实施授权 | 允许安装/配置 Docker、初始化 Swarm、创建 Secret/Config/service/volume，并在三个 Multipass 节点部署 | 未授权 |
 | `G4` 故障演练授权 | 允许在本地测试环境执行 task kill、节点停止、依赖中断、OOM 和受控 migration 失败测试 | 未授权 |
@@ -87,7 +88,7 @@ flowchart LR
 | 阶段 | 状态 | 进入条件 | 退出条件 |
 | --- | --- | --- | --- |
 | 0. 需求冻结与架构决策 | 已完成 | 方案设计审核 | 本地设计项确认、实施计划形成 |
-| 1. 节点与基础设施基线 | 未开始 | `G1`；涉及 GHCR/节点时再分别取得 `G2/G3` | 发布链、制品、配置骨架和三 manager 基线通过 |
+| 1. 节点与基础设施基线 | 进行中：G1 已完成，G2/G3 未开始 | `G1`；涉及 GHCR/节点时再分别取得 `G2/G3` | 发布链、制品、配置骨架和三 manager 基线通过 |
 | 2. 数据服务与单副本基线 | 未开始 | 阶段 1 通过且已取得 `G3` | PostgreSQL/Redis、单次 bootstrap、单副本与本机 Caddy 基线通过 |
 | 3. 多实例前置收敛 | 未开始 | 阶段 2 通过且代码修补范围再次确认 | 必要 P0 修补、进程级测试和静态验证满足门槛；不启用 `node2`/`node3` 应用副本 |
 | 4. 三副本与故障演练 | 未开始 | 阶段 3 通过且已取得 `G4` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
@@ -101,14 +102,14 @@ flowchart LR
 
 ### 5.2 实施前复核清单
 
-- [ ] 确认方案文档状态仍为“阶段 0 门槛已满足”；
-- [ ] 确认本计划已人工审核；
-- [ ] 确认三个现有节点均为 `manager + worker`，后续容量节点只作为 worker；
-- [ ] 确认 PostgreSQL 固定 `node1`、Redis 固定 `node2`，不做数据服务 HA；
-- [ ] 确认 Caddy 每节点只代理本机 Sub2API，不改用 Traefik/routing mesh；
-- [ ] 确认本地使用 `sub2api.test`、`tls internal`，不接 DNSPod；
-- [ ] 确认生产容量与监控细项继续延期，不作为本地阻塞项；
-- [ ] 明确本轮获得的是 `G1`、`G2`、`G3` 中哪一层授权。
+- [x] 确认方案文档状态仍为“阶段 0 门槛已满足”；
+- [x] 确认本计划已人工审核；
+- [x] 确认三个现有节点均为 `manager + worker`，后续容量节点只作为 worker；
+- [x] 确认 PostgreSQL 固定 `node1`、Redis 固定 `node2`，不做数据服务 HA；
+- [x] 确认 Caddy 每节点只代理本机 Sub2API，不改用 Traefik/routing mesh；
+- [x] 确认本地使用 `sub2api.test`、`tls internal`，不接 DNSPod；
+- [x] 确认生产容量与监控细项继续延期，不作为本地阻塞项；
+- [x] 明确本轮仅获得 `G1`，未获得 `G2/G3`。
 
 ### 5.3 停止条件
 
@@ -122,12 +123,12 @@ flowchart LR
 
 ### 6.1 S1-A：仓库与上游基线复核
 
-- [ ] 确认工作树范围，保留用户无关改动；不使用 `git add -A` 暗中纳入其他文件；
-- [ ] 核对 `origin`/`upstream` URL、当前分支和远端默认分支；
-- [ ] fetch `origin` 和 `upstream`，只读比较差异；没有人工明确要求时不合并 upstream；
-- [ ] 读取当前 `backend/cmd/server/VERSION`，查询历史 fork tag，计算下一个未使用的 `ext.N`；
-- [ ] 记录 upstream commit、fork commit、Go/Docker/GoTask 版本和实施日期；
-- [ ] 运行实施前后端基线测试，区分既有失败与本轮引入失败。
+- [x] 确认工作树范围，保留用户无关改动；不使用 `git add -A` 暗中纳入其他文件；
+- [x] 核对 `origin`/`upstream` URL、当前分支和远端默认分支；
+- [x] fetch `origin` 和 `upstream`，只读比较差异；未合并 upstream；
+- [x] 读取当前 `backend/cmd/server/VERSION`，查询历史 fork tag，计算下一个未使用的 `ext.N`；
+- [x] 记录 upstream commit、fork commit、Go/Docker/GoTask 版本和实施日期；
+- [x] 运行实施前后端基线测试并区分既有失败；结果见 6.4.1。
 
 产物：版本输入表、remote/branch 记录、基线测试记录。
 
@@ -135,31 +136,31 @@ flowchart LR
 
 在 `G1` 授权后按独立提交实施：
 
-- [ ] 新增 `backend/extends/VERSION`，首个实际值由历史 tag 核验决定；当前计划值为 `ext.1`；
-- [ ] 保持 `backend/cmd/server/VERSION` 不变；增加测试或 CI 检查，阻止 fork 发布流程改写该文件；
-- [ ] 修改 `.github/workflows/release.yml`，只读组合 upstream VERSION 与 ext VERSION；
-- [ ] 校验格式分别为 `X.Y.Z` 与 `ext.N`，并校验触发 tag 严格等于 `v${FORK_VERSION}`；
-- [ ] 删除 workflow 中写入、上传替换或自动提交 `backend/cmd/server/VERSION` 的步骤；
-- [ ] 修改 `.goreleaser.yaml` 和 `.goreleaser.simple.yaml`，通过现有 `ldflags` 注入不带前导 `v` 的完整 `main.Version`，继续注入 `Commit`、`Date`、`BuildType`；
-- [ ] 将 GitHub Release 明确设置为 `prerelease: false`；
-- [ ] 保留 ARM64/AMD64 架构 tag 和 multi-arch manifest，确保 tag 带前导 `v`；
-- [ ] 增加只读校验：两个 VERSION 文件未被 CI 修改、tag/运行时版本一致、历史 ext 序号未复用。
+- [x] 新增 `backend/extends/VERSION`，历史 tag 核验后首值为 `ext.1`；
+- [x] 保持 `backend/cmd/server/VERSION` 不变；CI 在发布前后检查两个 VERSION 文件未变化；
+- [x] 修改 `.github/workflows/release.yml`，只读组合 upstream VERSION 与 ext VERSION；
+- [x] 校验格式分别为 `X.Y.Z` 与 `ext.N`，并校验触发 tag 严格等于 `v${FORK_VERSION}`；
+- [x] 删除 workflow 中写入、上传替换或自动提交 `backend/cmd/server/VERSION` 的步骤；
+- [x] 修改 `.goreleaser.yaml` 和 `.goreleaser.simple.yaml`，通过现有 `ldflags` 注入不带前导 `v` 的完整 `main.Version`，继续注入 `Commit`、`Date`、`BuildType`；
+- [x] 将 GitHub Release 明确设置为 `prerelease: false`；
+- [x] 固定 release workflow 只执行完整发布，保留 ARM64/AMD64 架构 tag 和 multi-arch manifest，tag 带前导 `v`；
+- [x] 增加只读校验：两个 VERSION 文件未被 CI 修改、tag/运行时版本一致、历史 ext 序号未复用。
 
 验证：
 
-- [ ] `git diff` 证明 upstream VERSION 未变化；
-- [ ] GoReleaser 配置校验通过；
-- [ ] 本地或 CI dry-run 得到 `FORK_VERSION=0.1.165-ext.1`（若基线未变化）；
-- [ ] 构建二进制返回完整 fork `Version/Commit/Date`；
-- [ ] 没有为 `-ext.N` 修改应用内更新逻辑。
+- [x] `git diff` 证明 upstream VERSION 未变化；
+- [x] 两份 GoReleaser 配置由 GoReleaser `2.17.0` 校验通过；保留上游 `dockers/docker_manifests` deprecation 警告，不在 G1 迁移 `dockers_v2`；
+- [x] 本地 dry-run 得到 `FORK_VERSION=0.1.165-ext.1`；
+- [x] 使用 Go `1.26.5` 构建的二进制返回完整 fork `Version/Commit/Date`；
+- [x] 没有为 `-ext.N` 修改应用内更新逻辑。
 
 ### 6.3 S1-C：Caddy 与双架构制品输入
 
-- [ ] 使用固定的 Caddy `v2.11.4` 和 `github.com/pberkel/caddy-storage-redis@v1.8.1`；
-- [ ] 以单一最小 Dockerfile 作为 Caddy 自定义镜像构建输入，不建立额外镜像框架；
-- [ ] Caddy 使用独立构建 job/package，不进入 Sub2API 镜像；
+- [x] 使用固定的 Caddy `v2.11.4` 和 `github.com/pberkel/caddy-storage-redis@v1.8.1`，并核对 tag 对应源码 commit；
+- [x] 以单一最小 Dockerfile 作为 Caddy 自定义镜像构建输入，不建立额外镜像框架；
+- [x] Caddy 使用独立手工构建 workflow/package，不进入 Sub2API 镜像；
 - [ ] 分别构建 `linux/arm64`、`linux/amd64` 子镜像和 multi-arch manifest；
-- [ ] Sub2API 复用修正后的现有 GoReleaser multi-arch 发布链；
+- [x] Sub2API 复用修正后的现有 GoReleaser multi-arch 发布链；
 - [ ] PostgreSQL `18-alpine`、Redis `8-alpine` 在实施时固定对应平台 digest；
 - [ ] 保存构建输入、源码 revision、模块清单和平台 digest；SBOM/扫描仅在现有发布链可直接产出时保留，新增扫描工具延期到生产准入。
 
@@ -171,8 +172,8 @@ flowchart LR
 验证：
 
 - [ ] `docker buildx imagetools inspect` 显示 ARM64/AMD64 平台正确；
-- [ ] `caddy version` 为固定版本；
-- [ ] `caddy list-modules` 包含 `caddy.storage.redis`；
+- [x] G1 本地源码构建的 `caddy version` 为 `v2.11.4`；G2 后仍须对每个平台镜像复验；
+- [x] G1 本地源码构建的 `caddy list-modules` 包含 `caddy.storage.redis`；G2 后仍须对每个平台镜像复验；
 - [ ] 部署记录使用平台子镜像 digest，而不是只记录 manifest tag；
 - [ ] GHCR 不可达时停止，不回退到 Docker Hub、`latest` 或本地可变 tag。
 
@@ -193,16 +194,27 @@ deploy/cluster/
     └── production-amd64/
 ```
 
-- [ ] 根 Taskfile 只组合 `validate/release/ops` 命名空间；
-- [ ] `validate` 覆盖 Docker Context、Manager/quorum、架构、label、placement、资源限制、固定 digest 和 Config/Secret 引用；
-- [ ] `release` 先实现 `plan/apply/verify/rollback/bootstrap` 契约，不提供通用 `uninstall`；
-- [ ] `ops` 第一期只提供状态、日志和节点检查；`drain/undrain` 自动化延期，需要时先按手册人工执行；
-- [ ] ARM64/AMD64 环境文件只保存非敏感参数和脱敏模板；
-- [ ] Stack 不包含明文 Secret、可变 tag、Docker Socket 或未受控 bind mount；
-- [ ] Caddyfile 包含本机 upstream、Redis storage、回环 admin API、内部 TLS 和管理端更新接口阻断规则；
-- [ ] 不预建空 `scripts/` 或占位文件；复杂逻辑只有在 Taskfile 无法安全表达时才按需新增短脚本。
+- [x] 根 Taskfile 只组合 `validate/release/ops` 命名空间；
+- [x] `validate` 覆盖 Docker Context、Manager/quorum、架构、label、placement、资源限制、固定 digest 和 Config/Secret 引用；
+- [x] `release` 实现 `plan/apply/verify/rollback/bootstrap` 契约，不提供通用 `uninstall`；
+- [x] `ops` 第一期只提供状态、日志和节点检查；未增加 `drain/undrain` 自动化；
+- [x] ARM64/AMD64 环境文件只保存非敏感参数和脱敏模板；
+- [x] Stack 不包含明文 Secret、可变 tag、Docker Socket 或未受控 bind mount；
+- [x] 两套 Caddyfile 包含本机 upstream、Redis storage、回环 admin API、入口 TLS 和管理端更新接口阻断规则；集群内 Redis 首期不虚构未实现的传输层 TLS；
+- [x] 未创建空 `scripts/`、占位控制器或长期 bootstrap/migration service。
 
 阶段 1 只要求配置可渲染、可静态校验；没有 `G3` 时不得执行 `release:apply`。
+
+#### 6.4.1 G1 验证记录
+
+- `actionlint 1.7.7`：两份 GitHub Actions workflow 通过；
+- GoReleaser `2.17.0 check`：两份配置通过；上游 `dockers/docker_manifests` 仅保留 deprecation 提示；
+- Go `1.26.5`：`go test ./...` 全量通过；组合版本二进制输出 `0.1.165-ext.1`、起点 commit 与构建时间；
+- Caddy：固定源码 revision 与 module revision 已由 Go module origin 核对；本地源码构建成功，版本和 module 清单通过，两套 Caddyfile `adapt` 通过；
+- Stack/Taskfile：两套环境均完成 `docker stack config` 渲染，`task --list-all` 只暴露已批准入口；`validate:stack` 会按设计拒绝全零 digest，故在取得 G2 前不能发布；
+- 分阶段探针：阶段 2 的本地档使用现有 `/health`，阶段 3 readiness 修补验证后切换 `/ready`；生产档强制 `/ready`，避免在尚无该路由时阻断单副本基线；
+- 前端：pnpm `9.15.9` 的 typecheck 和 production build 通过；全量 Vitest 为 `188 passed / 1 failed` 文件、`1301 passed / 2 failed` 用例，并有 10 个既有 mock 未处理错误。失败集中在 rollback API 第三个 timeout 参数断言及 `getLiveCapability` mock 缺失，本轮未修改前端源码；
+- Docker Caddyfile 构建检查因本机 Docker BuildKit 仍指向不可达代理 `127.0.0.1:7890` 未完成；已用同版本 `xcaddy` 本地源码构建替代验证，双架构容器验证保留到 G2。
 
 ### 6.5 S1-E：节点与 Swarm 基线
 
@@ -597,4 +609,4 @@ deploy/cluster/
 - [ ] 阶段 5 交付物是否足够；
 - [ ] 是否仅授权 `G1`，或同时授权 `G2/G3`。
 
-审核通过前，本计划保持“待人工审核，尚未授权实施”状态。
+当前 G0 已通过、G1 已执行并停在产物审核点；G2/G3 仍未授权。审核 G1 不自动触发镜像发布或节点实施。

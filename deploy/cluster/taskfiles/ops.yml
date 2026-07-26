@@ -1,0 +1,65 @@
+version: '3'
+
+tasks:
+  status:
+    desc: Show Stack services and task placement
+    vars:
+      TARGET_ENV: '{{default "local" .ENV}}'
+      PROFILE: '{{if eq .TARGET_ENV "local"}}local-arm64{{else}}production-amd64{{end}}'
+      ENV_FILE: '{{.ROOT_DIR}}/env/{{.PROFILE}}/cluster.env'
+    preconditions:
+      - sh: test "{{.TARGET_ENV}}" = local || test "{{.TARGET_ENV}}" = production
+        msg: ENV must be local or production
+    cmds:
+      - |
+        set -a
+        . "{{.ENV_FILE}}"
+        set +a
+        docker --context "$DOCKER_CONTEXT" stack services "$STACK_NAME"
+        for component in sub2api caddy postgres redis; do
+          docker --context "$DOCKER_CONTEXT" service ps "${STACK_NAME}_${component}" --no-trunc
+        done
+
+  logs:
+    desc: Show recent logs for one allowlisted Stack service
+    requires:
+      vars:
+        - name: SERVICE
+          enum: [sub2api, caddy, postgres, redis]
+    vars:
+      TARGET_ENV: '{{default "local" .ENV}}'
+      PROFILE: '{{if eq .TARGET_ENV "local"}}local-arm64{{else}}production-amd64{{end}}'
+      ENV_FILE: '{{.ROOT_DIR}}/env/{{.PROFILE}}/cluster.env'
+    preconditions:
+      - sh: test "{{.TARGET_ENV}}" = local || test "{{.TARGET_ENV}}" = production
+        msg: ENV must be local or production
+    cmds:
+      - |
+        set -a
+        . "{{.ENV_FILE}}"
+        set +a
+        docker --context "$DOCKER_CONTEXT" service logs \
+          --since "{{default "30m" .SINCE}}" \
+          --tail "{{default "200" .TAIL}}" \
+          "${STACK_NAME}_{{.SERVICE}}"
+
+  node-status:
+    desc: Show Swarm node status and tasks; does not drain or activate nodes
+    vars:
+      TARGET_ENV: '{{default "local" .ENV}}'
+      PROFILE: '{{if eq .TARGET_ENV "local"}}local-arm64{{else}}production-amd64{{end}}'
+      ENV_FILE: '{{.ROOT_DIR}}/env/{{.PROFILE}}/cluster.env'
+    preconditions:
+      - sh: test "{{.TARGET_ENV}}" = local || test "{{.TARGET_ENV}}" = production
+        msg: ENV must be local or production
+    cmds:
+      - |
+        set -a
+        . "{{.ENV_FILE}}"
+        set +a
+        if [ -n "{{default "" .NODE}}" ]; then
+          docker --context "$DOCKER_CONTEXT" node inspect --pretty "{{.NODE}}"
+          docker --context "$DOCKER_CONTEXT" node ps "{{.NODE}}" --no-trunc
+        else
+          docker --context "$DOCKER_CONTEXT" node ls
+        fi

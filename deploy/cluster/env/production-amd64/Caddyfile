@@ -1,0 +1,31 @@
+{
+	admin 127.0.0.1:2019
+	storage redis {
+		address "{$CADDY_REDIS_ADDRESS}"
+		username "{$CADDY_REDIS_USERNAME}"
+		password "{$CADDY_REDIS_PASSWORD}"
+		db "{$CADDY_REDIS_DB}"
+		key_prefix "sub2api-caddy-tls"
+		encryption_key "{$CADDY_STORAGE_ENCRYPTION_KEY}"
+		compression false
+		tls_enabled false
+	}
+}
+
+{$SUB2API_DOMAIN} {
+	log {
+		output stdout
+		format json
+	}
+
+	@blocked_update {
+		path /api/v1/admin/system/check-updates /api/v1/admin/system/rollback-versions /api/v1/admin/system/update /api/v1/admin/system/rollback
+	}
+	respond @blocked_update 403
+
+	reverse_proxy 127.0.0.1:8080 {
+		health_uri "{$SUB2API_UPSTREAM_HEALTH_URI}"
+		health_interval 5s
+		health_timeout 2s
+	}
+}

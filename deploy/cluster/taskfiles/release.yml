@@ -1,0 +1,203 @@
+version: '3'
+
+tasks:
+  plan:
+    desc: Show the immutable Stack release plan without changing the Swarm
+    requires:
+      vars:
+        - name: ENV
+          enum: [local, production]
+        - name: RELEASE
+    vars:
+      PROFILE: '{{if eq .ENV "local"}}local-arm64{{else}}production-amd64{{end}}'
+      ENV_FILE: '{{.ROOT_DIR}}/env/{{.PROFILE}}/cluster.env'
+      STACK_FILE: '{{.ROOT_DIR}}/stacks/sub2api.yml'
+    cmds:
+      - task --dir "{{.ROOT_DIR}}" validate:stack ENV="{{.ENV}}"
+      - task --dir "{{.ROOT_DIR}}" validate:environment ENV="{{.ENV}}"
+      - |
+        set -a
+        . "{{.ENV_FILE}}"
+        set +a
+        test "$SUB2API_RELEASE" = "{{.RELEASE}}"
+        echo "environment=$ENVIRONMENT"
+        echo "stack=$STACK_NAME"
+        echo "release=$SUB2API_RELEASE"
+        echo "fork_commit=$(git -C '{{.ROOT_DIR}}/../..' rev-parse HEAD)"
+        echo "sub2api_image=$SUB2API_IMAGE"
+        echo "caddy_image=$CADDY_IMAGE"
+        echo "postgres_image=$POSTGRES_IMAGE"
+        echo "redis_image=$REDIS_IMAGE"
+        echo "caddyfile_config=$CADDYFILE_CONFIG"
+        echo "model_pricing_config=$MODEL_PRICING_CONFIG"
+        echo "app_config_secret=$APP_CONFIG_SECRET"
+        docker --context "$DOCKER_CONTEXT" stack services "$STACK_NAME" 2>/dev/null || true
+        docker stack config --compose-file "{{.STACK_FILE}}" >/dev/null
+
+  apply:
+    desc: Deploy the reviewed Stack manifest; requires G3 authorization
+    requires:
+      vars:
+        - name: ENV
+          enum: [local, production]
+        - name: RELEASE
+    vars:
+      PROFILE: '{{if eq .ENV "local"}}local-arm64{{else}}production-amd64{{end}}'
+      ENV_FILE: '{{.ROOT_DIR}}/env/{{.PROFILE}}/cluster.env'
+      STACK_FILE: '{{.ROOT_DIR}}/stacks/sub2api.yml'
+    cmds:
+      - task --dir "{{.ROOT_DIR}}" release:plan ENV="{{.ENV}}" RELEASE="{{.RELEASE}}"
+      - |
+        set -a
+        . "{{.ENV_FILE}}"
+        set +a
+        docker --context "$DOCKER_CONTEXT" stack deploy \
+          --compose-file "{{.STACK_FILE}}" \
+          --resolve-image never \
+          --with-registry-auth \
+          "$STACK_NAME"
+
+  verify:
+    desc: Verify service placement, running digest and every Caddy node entry
+    requires:
+      vars:
+        - name: ENV
+          enum: [local, production]
+    vars:
+      PROFILE: '{{if eq .ENV "local"}}local-arm64{{else}}production-amd64{{end}}'
+      ENV_FILE: '{{.ROOT_DIR}}/env/{{.PROFILE}}/cluster.env'
+    cmds:
+      - task --dir "{{.ROOT_DIR}}" validate:environment ENV="{{.ENV}}"
+      - |
+        set -a
+        . "{{.ENV_FILE}}"
+        set +a
+        for component in sub2api caddy postgres redis; do
+          service_name="${STACK_NAME}_${component}"
+          docker --context "$DOCKER_CONTEXT" service inspect "$service_name" >/dev/null
+          if docker --context "$DOCKER_CONTEXT" service ps "$service_name" --no-trunc | grep -Eq 'Failed|Rejected'; then
+            exit 1
+          fi
+        done
+
+        actual_sub2api_image=$(docker --context "$DOCKER_CONTEXT" service inspect --format '{{"{{.Spec.TaskTemplate.ContainerSpec.Image}}"}}' "${STACK_NAME}_sub2api")
+        actual_caddy_image=$(docker --context "$DOCKER_CONTEXT" service inspect --format '{{"{{.Spec.TaskTemplate.ContainerSpec.Image}}"}}' "${STACK_NAME}_caddy")
+        test "$actual_sub2api_image" = "$SUB2API_IMAGE"
+        test "$actual_caddy_image" = "$CADDY_IMAGE"
+
+        for address in $NODE_ADDRESSES; do
+          if [ "$ENVIRONMENT" = local ]; then
+            test -r "$CADDY_LOCAL_CA_FILE"
+            curl --noproxy '*' --fail --silent --show-error \
+              --resolve "$SUB2API_DOMAIN:443:$address" \
+              --cacert "$CADDY_LOCAL_CA_FILE" \
+              "https://$SUB2API_DOMAIN$SUB2API_HEALTH_PATH" >/dev/null
+          else
+            curl --noproxy '*' --fail --silent --show-error \
+              --resolve "$SUB2API_DOMAIN:443:$address" \
+              "https://$SUB2API_DOMAIN$SUB2API_HEALTH_PATH" >/dev/null
+          fi
+        done
+
+  rollback:
+    desc: Re-apply a reviewed previous manifest and verify it
+    requires:
+      vars:
+        - name: ENV
+          enum: [local, production]
+        - name: RELEASE
+    cmds:
+      - task --dir "{{.ROOT_DIR}}" release:apply ENV="{{.ENV}}" RELEASE="{{.RELEASE}}"
+      - task --dir "{{.ROOT_DIR}}" release:verify ENV="{{.ENV}}"
+
+  bootstrap:
+    desc: Run one transient AUTO_SETUP service, then delete its one-time admin Secret
+    requires:
+      vars:
+        - name: ENV
+          enum: [local, production]
+        - name: CONFIRM
+    vars:
+      PROFILE: '{{if eq .ENV "local"}}local-arm64{{else}}production-amd64{{end}}'
+      ENV_FILE: '{{.ROOT_DIR}}/env/{{.PROFILE}}/cluster.env'
+    preconditions:
+      - sh: test "{{.CONFIRM}}" = bootstrap-sub2api
+        msg: CONFIRM must equal bootstrap-sub2api
+    cmds:
+      - task --dir "{{.ROOT_DIR}}" validate:stack ENV="{{.ENV}}"
+      - task --dir "{{.ROOT_DIR}}" validate:environment ENV="{{.ENV}}"
+      - |
+        set -a
+        . "{{.ENV_FILE}}"
+        set +a
+        bootstrap_service="${STACK_NAME}_bootstrap_once"
+        if docker --context "$DOCKER_CONTEXT" service inspect "$bootstrap_service" >/dev/null 2>&1; then
+          echo "Bootstrap service already exists: $bootstrap_service" >&2
+          exit 1
+        fi
+        if docker --context "$DOCKER_CONTEXT" service inspect "${STACK_NAME}_sub2api" >/dev/null 2>&1 && \
+          [ -n "$(docker --context "$DOCKER_CONTEXT" service ps -q --filter desired-state=running "${STACK_NAME}_sub2api")" ]; then
+          echo 'Refusing bootstrap while a formal Sub2API task is running' >&2
+          exit 1
+        fi
+        docker --context "$DOCKER_CONTEXT" secret inspect "$BOOTSTRAP_ADMIN_PASSWORD_SECRET" >/dev/null
+        docker --context "$DOCKER_CONTEXT" service inspect "${STACK_NAME}_postgres" >/dev/null
+        docker --context "$DOCKER_CONTEXT" service inspect "${STACK_NAME}_redis" >/dev/null
+
+        docker --context "$DOCKER_CONTEXT" service create \
+          --detach=true \
+          --name "$bootstrap_service" \
+          --constraint node.labels.postgres==true \
+          --network "$APP_NETWORK_NAME" \
+          --restart-condition none \
+          --secret "source=$APP_CONFIG_SECRET,target=bootstrap_app_config" \
+          --secret "source=$POSTGRES_PASSWORD_SECRET,target=postgres_password" \
+          --secret "source=$REDIS_APP_PASSWORD_SECRET,target=redis_app_password" \
+          --secret "source=$BOOTSTRAP_ADMIN_PASSWORD_SECRET,target=bootstrap_admin_password" \
+          --env AUTO_SETUP=true \
+          --env DATA_DIR=/tmp/sub2api-bootstrap \
+          --env DATABASE_HOST=postgres \
+          --env DATABASE_PORT=5432 \
+          --env DATABASE_USER=sub2api \
+          --env DATABASE_DBNAME=sub2api \
+          --env DATABASE_SSLMODE=disable \
+          --env REDIS_HOST=redis \
+          --env REDIS_PORT=6379 \
+          --env REDIS_USERNAME=sub2api \
+          --env REDIS_DB=0 \
+          --env "ADMIN_EMAIL=$BOOTSTRAP_ADMIN_EMAIL" \
+          --env SETUP_MIGRATION_TIMEOUT_SECONDS=300 \
+          --env "TZ=$TZ" \
+          --entrypoint /bin/sh \
+          "$SUB2API_IMAGE" \
+          -ec '
+            export DATABASE_PASSWORD=$(cat /run/secrets/postgres_password)
+            export REDIS_PASSWORD=$(cat /run/secrets/redis_app_password)
+            export ADMIN_PASSWORD=$(cat /run/secrets/bootstrap_admin_password)
+            export JWT_SECRET=$(sed -n "/^jwt:/,/^[^[:space:]]/ s/^[[:space:]]*secret:[[:space:]]*\"\([^\"]*\)\".*/\1/p" /run/secrets/bootstrap_app_config)
+            test -n "$DATABASE_PASSWORD"
+            test -n "$REDIS_PASSWORD"
+            test -n "$ADMIN_PASSWORD"
+            test -n "$JWT_SECRET"
+            exec /app/sub2api
+          '
+
+        bootstrap_ok=false
+        for attempt in $(seq 1 60); do
+          if docker --context "$DOCKER_CONTEXT" service logs --raw "$bootstrap_service" 2>&1 | grep -Fq 'Auto setup completed successfully!'; then
+            bootstrap_ok=true
+            break
+          fi
+          if docker --context "$DOCKER_CONTEXT" service ps "$bootstrap_service" --no-trunc | grep -Eq 'Failed|Rejected'; then
+            break
+          fi
+          sleep 3
+        done
+        if [ "$bootstrap_ok" != true ]; then
+          docker --context "$DOCKER_CONTEXT" service logs --raw "$bootstrap_service" || true
+          echo 'Bootstrap did not complete; service and Secret were retained for diagnosis' >&2
+          exit 1
+        fi
+
+        docker --context "$DOCKER_CONTEXT" service rm "$bootstrap_service"
+        docker --context "$DOCKER_CONTEXT" secret rm "$BOOTSTRAP_ADMIN_PASSWORD_SECRET"
