@@ -1,6 +1,6 @@
 # Sub2API 多节点部署实施计划
 
-> 状态：`G0/G1` 已通过；`G2/G3` 未授权、未执行
+> 状态：`G0/G1/G2` 已通过；`G3` 未授权、未执行
 > 创建日期：2026-07-26
 > 适用范围：三个 Multipass ARM64 节点的本地 Docker Swarm 验证，以及 AMD64 生产制品与配置基线
 > 方案来源：[`Sub2API-MultiNode-Deployment.md`](./Sub2API-MultiNode-Deployment.md)
@@ -11,15 +11,14 @@
 
 本文把已经完成的多节点部署方案拆解为可执行、可验证、可停止和可回滚的实施步骤。阶段编号严格沿用方案文档第 7 节：阶段 0 至阶段 5。
 
-本轮授权只覆盖 `G1` 仓库侧实施及审核发现的发布面收敛修正，已经修改发布 workflow/GoReleaser 配置，并创建 `backend/extends/VERSION`、固定 Caddy 构建输入和 `deploy/cluster`。发布面收敛只允许修改静态配置和验证，不代表授权运行发布 workflow。仍不执行下列操作：
+当前已完成 `G1` 仓库侧实施与 `G2` 制品发布：发布不可变 fork tag、两套 private GHCR 双架构制品，并回填 ARM64/AMD64 平台 digest。`G2` 不包含节点或服务实施，仍不执行下列操作：
 
 - 不修改 Sub2API 运行时代码，不实施阶段 3 的多实例安全修补；
-- 不构建、推送或覆盖 GHCR 镜像/tag；
 - 不安装 Docker/GoTask，不初始化或修改 Swarm；
 - 不创建 Docker Secret/Config、网络、service、volume 或数据库；
 - 不登录节点、不执行 bootstrap、migration、故障注入或生产切流；
 - 不配置 DNSPod，不处理 DNS 故障节点摘除；
-- 不创建或推送 release tag，不手工触发任何发布 workflow。
+- 不重复触发已完成的发布 workflow，不覆盖任何 release tag 或镜像 tag。
 
 批准本文只代表认可实施顺序和门槛，不自动授权任何源码、外部制品、节点或生产变更。
 
@@ -44,11 +43,11 @@
 | --- | --- |
 | fork 分支 | `main`，跟踪 `origin/main` |
 | G1 实施起点 commit | `74b34cec90ff0638b5d51eabbf962ff4002d0472` |
-| G1 实施提交链 | `4077dd769f54e69cd8a6acec6b44ad5e322ba4d9`（静态骨架）→ `08825263b6b04e72e8bba45273d406969a900aac`（private GHCR 发布面收敛）→ `2842f9ba729dae6d6d7d58e1881a92730108286b`（关闭最终发布阻断）；最终 CI `30205790667`、Security Scan `30205790706` 均通过 |
+| G1 实施提交链 | `4077dd769f54e69cd8a6acec6b44ad5e322ba4d9`（静态骨架）→ `08825263b6b04e72e8bba45273d406969a900aac`（private GHCR 发布面收敛）→ `2842f9ba729dae6d6d7d58e1881a92730108286b`（关闭最终发布阻断）→ `5779d0b4b0d7b4821f2283afd667598380343386`（G1 文档闭环）；最终 CI `30206791653`、Security Scan `30206791734` 均通过 |
 | upstream 基线 commit | `2730c1c43b29be003925b033f3f9e645e726bb8c` |
 | upstream VERSION | `backend/cmd/server/VERSION = 0.1.165` |
-| fork VERSION | `backend/extends/VERSION = ext.1`；实施前确认历史 fork tag 为空 |
-| 组合版本 | `0.1.165-ext.1`，预期 tag/镜像 tag 为 `v0.1.165-ext.1` |
+| fork VERSION | `backend/extends/VERSION = ext.1`；历史 fork tag 在 G2 前为空 |
+| 组合版本 | `0.1.165-ext.1`；annotated tag `v0.1.165-ext.1` 已固定到 `5779d0b4b0d7b4821f2283afd667598380343386` |
 | `backend/extends` | 已创建，仅含 `VERSION`；尚未增加任何运行时代码或新功能 |
 | `deploy/cluster` | 已创建 G1 静态骨架、通用 Stack、两套环境档、Caddyfile 和 GoTask 契约 |
 | release workflow | 唯一入口为 GHCR-only `workflow_dispatch`；只读组合双 VERSION并校验已有 tag，任何 digest push 前要求已有 package 为 private 或确认尚不存在，push 后再次确认 private 才提升三个不可变 tag；不创建 GitHub Release、不发布 Docker Hub、不发送通知 |
@@ -77,7 +76,7 @@ flowchart LR
 | --- | --- | --- |
 | `G0` 计划审核 | 只审核本文，不修改实施文件或环境 | 已通过 |
 | `G1` 仓库实施授权 | 允许修改版本/发布文件，创建 `backend/extends`、`deploy/cluster` 和测试；不推送镜像、不修改节点 | 已通过 |
-| `G2` 制品发布授权 | 允许向私有 GHCR 推送新的不可变 tag/manifest，并记录平台 digest | 未授权 |
+| `G2` 制品发布授权 | 允许向私有 GHCR 推送新的不可变 tag/manifest，并记录平台 digest | 已通过 |
 | `G3` 本地环境实施授权 | 允许安装/配置 Docker、初始化 Swarm、创建 Secret/Config/service/volume，并在三个 Multipass 节点部署 | 未授权 |
 | `G4` 故障演练授权 | 允许在本地测试环境执行 task kill、节点停止、依赖中断、OOM 和受控 migration 失败测试 | 未授权 |
 | `G5` 交付确认 | 确认本地验收结论并关闭实施计划 | 未授权 |
@@ -89,7 +88,7 @@ flowchart LR
 | 阶段 | 状态 | 进入条件 | 退出条件 |
 | --- | --- | --- | --- |
 | 0. 需求冻结与架构决策 | 已完成 | 方案设计审核 | 本地设计项确认、实施计划形成 |
-| 1. 节点与基础设施基线 | 进行中：G1 已通过，G2/G3 未开始 | `G1`；涉及 GHCR/节点时再分别取得 `G2/G3` | 发布链、制品、配置骨架和三 manager 基线通过 |
+| 1. 节点与基础设施基线 | 进行中：G1/G2 已通过，G3 未开始 | `G1`；涉及 GHCR/节点时再分别取得 `G2/G3` | 发布链、制品、配置骨架和三 manager 基线通过 |
 | 2. 数据服务与单副本基线 | 未开始 | 阶段 1 通过且已取得 `G3` | PostgreSQL/Redis、单次 bootstrap、单副本与本机 Caddy 基线通过 |
 | 3. 多实例前置收敛 | 未开始 | 阶段 2 通过且代码修补范围再次确认 | 必要 P0 修补、进程级测试和静态验证满足门槛；不启用 `node2`/`node3` 应用副本 |
 | 4. 三副本与故障演练 | 未开始 | 阶段 3 通过且已取得 `G4` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
@@ -110,7 +109,7 @@ flowchart LR
 - [x] 确认 Caddy 每节点只代理本机 Sub2API，不改用 Traefik/routing mesh；
 - [x] 确认本地使用 `sub2api.test`、`tls internal`，不接 DNSPod；
 - [x] 确认生产容量与监控细项继续延期，不作为本地阻塞项；
-- [x] 明确本轮仅获得 `G1` 及其审核修正，未获得 `G2/G3`。
+- [x] 明确 `G1/G2` 已分别授权并完成，未获得 `G3`。
 
 ### 5.3 停止条件
 
@@ -161,10 +160,10 @@ flowchart LR
 - [x] 使用固定的 Caddy `v2.11.4` 和 `github.com/pberkel/caddy-storage-redis@v1.8.1`，并核对 tag 对应源码 commit；
 - [x] 以单一最小 Dockerfile 作为 Caddy 自定义镜像构建输入，不建立额外镜像框架；
 - [x] Caddy 使用独立手工构建 workflow/package，不进入 Sub2API 镜像；
-- [ ] 分别构建 `linux/arm64`、`linux/amd64` 子镜像和 multi-arch manifest；
+- [x] 分别构建 `linux/arm64`、`linux/amd64` 子镜像和 multi-arch manifest；
 - [x] Sub2API 使用现有多阶段 Dockerfile 和 Buildx 的 digest-first 双架构发布链，不复制应用构建逻辑；
-- [ ] PostgreSQL `18-alpine`、Redis `8-alpine` 在实施时固定对应平台 digest；
-- [ ] 保存构建输入、源码 revision、模块清单和平台 digest；SBOM/扫描仅在现有发布链可直接产出时保留，新增扫描工具延期到生产准入。
+- [x] PostgreSQL `18-alpine`、Redis `8-alpine` 固定同一上游 index 下对应平台 digest；
+- [x] 保存构建输入、源码 revision、G1 模块清单和平台 digest；现有链路未直接产出 SBOM/扫描，未为 G2 新增扫描工具。
 
 只有取得 `G2` 后才允许推送以下私有 package：
 
@@ -173,11 +172,11 @@ flowchart LR
 
 验证：
 
-- [ ] `docker buildx imagetools inspect` 显示 ARM64/AMD64 平台正确；
-- [x] G1 本地源码构建的 `caddy version` 为 `v2.11.4`；G2 后仍须对每个平台镜像复验；
-- [x] G1 本地源码构建的 `caddy list-modules` 包含 `caddy.storage.redis`；G2 后仍须对每个平台镜像复验；
-- [ ] 部署记录使用平台子镜像 digest，而不是只记录 manifest tag；
-- [ ] GHCR 不可达时停止，不回退到 Docker Hub、`latest` 或本地可变 tag。
+- [x] 发布 workflow 的 `docker buildx imagetools inspect` 证据显示 ARM64/AMD64 平台正确；
+- [x] G1 本地源码构建的 `caddy version` 为 `v2.11.4`；平台镜像命令复验随 G3 首次私有拉取执行；
+- [x] G1 本地源码构建的 `caddy list-modules` 包含 `caddy.storage.redis`；平台镜像命令复验随 G3 首次私有拉取执行；
+- [x] 部署记录使用平台子镜像 digest，而不是只记录 manifest tag；
+- [x] GHCR 不可达时停止，不回退到 Docker Hub、`latest` 或本地可变 tag。
 
 ### 6.4 S1-D：`deploy/cluster` 最小骨架
 
@@ -219,10 +218,25 @@ deploy/cluster/
 - GoReleaser `2.17.0 check`：两份仅本地制品配置通过，且均不包含 registry publisher；
 - Go `1.26.5`：`go test ./...` 全量通过；组合版本二进制输出 `0.1.165-ext.1`、起点 commit 与构建时间；
 - Caddy：固定源码 revision 与 module revision 已由 Go module origin 核对；本地源码构建成功，版本和 module 清单通过，两套 Caddyfile `adapt` 通过；
-- Stack/Taskfile：两套环境均完成 `docker stack config` 渲染，`task --list-all` 只暴露已批准入口；`validate:stack` 会按设计拒绝全零 digest，故在取得 G2 前不能发布；
+- Stack/Taskfile：G1 时两套环境均完成 `docker stack config` 渲染，`task --list-all` 只暴露已批准入口；当时 `validate:stack` 按设计拒绝全零 digest，G2 已完成回填；
 - 分阶段探针：阶段 2 的本地档使用现有 `/health`，阶段 3 readiness 修补验证后切换 `/ready`；生产档强制 `/ready`，避免在尚无该路由时阻断单副本基线；
 - 前端：pnpm `9.15.9` 的 typecheck 和 production build 通过；全量 Vitest 为 `188 passed / 1 failed` 文件、`1301 passed / 2 failed` 用例，并有 10 个既有 mock 未处理错误。失败集中在 rollback API 第三个 timeout 参数断言及 `getLiveCapability` mock 缺失，本轮未修改前端源码；
-- Docker Caddyfile 构建检查因本机 Docker BuildKit 仍指向不可达代理 `127.0.0.1:7890` 未完成；已用同版本 `xcaddy` 本地源码构建替代验证，双架构容器验证保留到 G2。
+- Docker Caddyfile 构建检查因本机 Docker BuildKit 仍指向不可达代理 `127.0.0.1:7890` 未完成；已用同版本 `xcaddy` 本地源码构建替代验证。G2 已核验双架构 manifest/digest；容器内命令复验随 G3 首次私有拉取执行。
+
+#### 6.4.2 G2 制品发布记录
+
+- annotated tag `v0.1.165-ext.1` 的 tag object 为 `b5ca76496d45d921db56895816311113bba94cae`，peel 后固定到 G1 闭环提交 `5779d0b4b0d7b4821f2283afd667598380343386`；未创建 GitHub Release；
+- Sub2API workflow [`30207208963`](https://github.com/ryanpenn/sub2api/actions/runs/30207208963) 最终 attempt 2 成功：首次架构 push 后 GitHub 将新 package 初始化为 public，post-push private gate 在提升最终 tag 前停止；人工将精确 package 改为 private 后，仅重跑失败的 publish job，并复用相同架构 digest；
+- Caddy workflow [`30207210054`](https://github.com/ryanpenn/sub2api/actions/runs/30207210054) 成功：amd64 push 创建 package 后，在 arm64 构建完成及 publish 前将精确 package 改为 private，private gate 与不可变提升均通过；
+- 两个 package 当前均为 private；发布只产生带完整版本的 ARM64/AMD64 架构 tag 和 multi-arch tag，没有 Docker Hub、`latest`、GitHub Release 或外部通知写入；
+- G2 未进入任何 Multipass 节点；私有镜像的容器内命令复验保留到 G3 首次配置只读 `read:packages` 拉取凭据时执行，不为本地高权限凭据增加 package scope。
+
+| 组件 | linux/arm64 digest | linux/amd64 digest | multi-arch/index digest |
+| --- | --- | --- | --- |
+| Sub2API `v0.1.165-ext.1` | `sha256:1845076d3ff9dd23c15e807c754438c2dc142d7b1ce8cdee2e407d903c543708` | `sha256:0186e45b9e2cf7a9dad65dadb0e342b9275764ddd3da406c48d343cd1e43e08f` | `sha256:dfff6a1333ebda168bbd0e868fba743c52f06c765aa3ae0beb373935a5e01f5f` |
+| Caddy `v2.11.4-redis-v1.8.1` | `sha256:2e703acbd2db648195428f413f9338754481b6829752f330e35b5b901a01d531` | `sha256:b69f3df3fd10b6ec14db870047678e3be7cf511119169894100534404839cbed` | `sha256:c2ded406a07ebf438e0c0b7cbdd5a0773af6a78a65d8b6687c217a94934eb875` |
+| PostgreSQL `18-alpine`（index `sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15`） | `sha256:122c9942437efcbbb8d595fc578dee7d26ee1543c2a8634d183adfa4a1e55b4d` | `sha256:b6a16ed0eb96e2c362811f7eeb951eac8b459e7b40be4149ea5444aa7c65569b` | 上游 index，仅部署平台子镜像 |
+| Redis `8-alpine`（index `sha256:8096655e437712b07503796fb64d81359256cfcff0ab29d95a7da72863786efb`） | `sha256:ca5075df9552da2423c20c691a0208d60106f2ea71b47406d52c396bf0a6bd65` | `sha256:465aff338d817971674ff1ec3c0d59182e2b687018e87bf94b6e1491d0bb79e2` | 上游 index，仅部署平台子镜像 |
 
 ### 6.5 S1-E：节点与 Swarm 基线
 
@@ -241,9 +255,9 @@ deploy/cluster/
 
 ### 6.6 阶段 1 退出门槛
 
-- [ ] 版本组合、tag、runtime version 和双架构制品可追溯；
-- [ ] ARM64 平台 digest 已回填本地环境；AMD64 digest 已记录但未部署；
-- [ ] `deploy/cluster` 静态校验通过且未包含 Secret；
+- [x] 版本组合、tag、构建注入和双架构制品可追溯；容器内 runtime 命令复验随 G3 首次私有拉取执行；
+- [x] ARM64 平台 digest 已回填本地环境；AMD64 digest 已记录但未部署；
+- [x] `deploy/cluster` 静态渲染通过且未包含 Secret；生产模板仍由域名/IP/容量占位值阻断部署；
 - [ ] 三个 manager quorum 正常，数据节点 label 唯一；
 - [ ] 本阶段没有部署 PostgreSQL、Redis、Caddy 或 Sub2API 业务 service；
 - [ ] 阶段 1 差异按版本发布、集群骨架、节点证据分开审核。
@@ -615,6 +629,6 @@ deploy/cluster/
 - [ ] 阶段 3 修改文件是否全部落在第 8.8 节白名单，且条件提交没有被预设为必做；
 - [ ] 阶段 4 故障注入范围是否接受；
 - [ ] 阶段 5 交付物是否足够；
-- [ ] 是否仅授权 `G1`，或同时授权 `G2/G3`。
+- [x] `G1/G2` 已分别授权并完成；`G3` 仍保持独立授权。
 
-当前 G0/G1 已通过；G2/G3 仍未授权、未执行。G1 通过不自动触发镜像发布或节点实施。
+当前 G0/G1/G2 已通过；G3 仍未授权、未执行。G2 通过不自动触发节点实施。
