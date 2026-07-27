@@ -60,7 +60,7 @@ multipass exec node3 -- <command>
 
 正式 Sub2API `v0.1.165-ext.2` 固定到 commit `9aca50a8fd1ad34de6ef6ecf08eb58800a19fa89`，source image ID 为 `sha256:d6f956d592de70534e0c94fcff4199515dda555acc6f6ccef6405099daff5539`。旧版本 `v0.1.165-ext.1` 的 node image ID 为 `sha256:658b62d53062a22140670a40622b65f69432c7f32293113e2960c74b826e1e04`；G4-B1 已按历史归档 SHA-256 把旧镜像加载到三个节点并完成实际回滚，最终正式 service 已重新恢复为 `ext.2`。
 
-三个 Caddy 入口共用的 Local CA 根证书 SHA-256 指纹为 `1C:F3:6C:A9:FF:B0:AE:B9:25:3E:B0:47:95:D4:76:5A:F0:41:B8:EE:3A:B7:7A:07:58:E4:F9:7A:89:93:A2:CB`。三个入口呈现的叶证书 subject 均为空、关键 SAN 均为 `DNS:sub2api.test`，serial 均为 `6A756405F963CC3B7D3310DCAF348F5B`，SHA-256 指纹均为 `40:FD:12:CF:C3:3C:C4:B8:45:80:75:AD:1F:09:91:C1:4E:A2:5D:FA:50:C5:F1:C2:3E:5C:C1:D5:A6:F3:15:7A`。这证明当前三个入口读取到同一证书体系，但不替代后续的续期、Redis 中断或 Caddy 重启恢复演练。
+三个 Caddy 入口共用的 Local CA 根证书 SHA-256 指纹为 `1C:F3:6C:A9:FF:B0:AE:B9:25:3E:B0:47:95:D4:76:5A:F0:41:B8:EE:3A:B7:7A:07:58:E4:F9:7A:89:93:A2:CB`。三个入口呈现的叶证书 subject 均为空、关键 SAN 均为 `DNS:sub2api.test`，serial 均为 `6A756405F963CC3B7D3310DCAF348F5B`，SHA-256 指纹均为 `40:FD:12:CF:C3:3C:C4:B8:45:80:75:AD:1F:09:91:C1:4E:A2:5D:FA:50:C5:F1:C2:3E:5C:C1:D5:A6:F3:15:7A`。G4-B2a 已证明单个 Caddy task 从正常共享 storage 重启后仍读取相同证书体系；续期协调与 Redis 中断恢复仍未验证。
 
 本地 Stack 以 host mode 发布 Sub2API `8080` 供同节点 Caddy 访问，因此该端口也可从 Multipass 宿主机到达。本次测试环境已明确接受该安全例外；生产准入前必须通过防火墙或等价网络约束禁止绕过 Caddy。
 
@@ -76,7 +76,7 @@ multipass exec node3 -- <command>
 - 当前正式数据中没有 Provider 账户、Provider API Key 或 Scheduled Test plan，因此 OAuth、SSE/OpenAI WebSocket、生图 limiter、Batch job lock、Scheduled Test、expiry、计费和 migration 使用协议级、race 或隔离 integration harness 验证，没有为了测试增加真实 Provider 配置或制造费用；
 - 正式数据库的 `schema_migrations` 为 236 条记录、236 个唯一 filename、0 个空 checksum、0 组重复 filename；三个节点 TOTP 状态均为 disabled，近 500 行 Sub2API 日志的 password、Bearer、refresh token、JWT/TOTP secret 等敏感模式命中为 0。
 
-该记录只证明 S4-B 非破坏性专项；后续滚动与实际回滚已由 G4-B1/S4-C 单独完成。三个正式 task 同时替换、双协调后端同时故障、TOTP 启用后的跨节点行为、TLS 恢复和故障矩阵仍未执行，继续受 G4-B2 或后续单独授权约束。
+该记录只证明 S4-B 非破坏性专项；后续滚动与实际回滚已由 G4-B1/S4-C 单独完成，单 task、单节点和 Caddy 重启恢复已由 G4-B2a 单独完成。三个正式 task 同时替换、双协调后端同时故障、TOTP 启用后的跨节点行为、证书续期及其余故障矩阵仍未执行，继续受后续单独授权约束。
 
 ## G4-B1/S4-C 滚动与回滚记录
 
@@ -89,4 +89,15 @@ multipass exec node3 -- <command>
 - 模型价格 Config 使用语义相同的临时内容哈希对象完成更新与回滚，前后镜像不变；最终重新引用 `sub2api-local-model-pricing-139de8a906ce`，临时 Config 已删除；
 - 最终 Sub2API/Caddy 为 `3/3`，PostgreSQL/Redis 为 `1/1`，三个入口 `/ready=200`，应用 healthcheck 和 Caddy upstream health 均为 `/ready`，没有 `s4c` 临时对象残留。
 
-该记录不覆盖 task kill、节点停止、Redis/PostgreSQL 中断、OOM、三个正式 task 同时替换或 TLS storage 恢复；这些项目仍属于未授权的 G4-B2/S4-D。
+该记录不覆盖 task kill、节点停止、Redis/PostgreSQL 中断、OOM、三个正式 task 同时替换或 TLS storage 恢复；其中低风险 task/节点/Caddy 重启已由后续 G4-B2a 单独完成。
+
+## G4-B2a/S4-D 低风险故障记录
+
+2026-07-27 已完成单 Sub2API task、node3 manager 和单 Caddy task 的受控故障恢复：
+
+- node3 上单个 Sub2API task 被强制结束后约 10.6 秒恢复；采样期间 node1/node2 始终返回 200，仅 node3 短暂返回 502/503；
+- node3 停止后在 15 秒内进入 `Down/Unreachable`，node1/node2 保持 manager quorum 和各一个 global task，Sub2API/Caddy 为 `2/3`，PostgreSQL/Redis 为 `1/1`，没有在剩余节点补第二副本；node3 重新启动后约 24 秒恢复 Ready/Reachable 和本机两个 global task；
+- node3 上单个 Caddy task 被强制结束后约 5.2 秒恢复；采样期间 node1/node2 始终返回 200，仅 node3 短暂不可达；重启前后叶证书 serial/指纹一致，Redis DB 1 的 Caddy storage key 数保持 15、key name set SHA-256 保持 `8c59bdb6c96e954ab0b28d80c55c18c09e7ad3ed57992d7231c7a67c91a72ca8`，新 task 日志未出现证书签发事件；
+- 最终 `release:verify ENV=local` 通过，Sub2API/Caddy 恢复 `3/3`，PostgreSQL/Redis 保持 `1/1`，三个 manager 均 Ready。
+
+该记录不覆盖 Redis/PostgreSQL/数据节点中断、OOM、受控 migration 失败、证书续期协调或生产故障域。
