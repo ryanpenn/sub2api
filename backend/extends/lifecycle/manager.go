@@ -15,10 +15,22 @@ import (
 
 const dependencyProbeTimeout = 2 * time.Second
 
+type databasePinger interface {
+	PingContext(context.Context) error
+}
+
+type databaseProbe struct {
+	done chan struct{}
+	err  error
+}
+
 type Manager struct {
-	db       *sql.DB
+	db       databasePinger
 	redis    *redis.Client
 	draining atomic.Bool
+
+	dbProbeMu sync.Mutex
+	dbProbe   *databaseProbe
 
 	mu      sync.Mutex
 	sockets map[*websocket.Conn]struct{}
@@ -26,6 +38,13 @@ type Manager struct {
 }
 
 func NewManager(db *sql.DB, redisClient *redis.Client) *Manager {
+	if db == nil {
+		return newManager(nil, redisClient)
+	}
+	return newManager(db, redisClient)
+}
+
+func newManager(db databasePinger, redisClient *redis.Client) *Manager {
 	return &Manager{
 		db:      db,
 		redis:   redisClient,
@@ -43,7 +62,7 @@ func (m *Manager) Ready(ctx context.Context) error {
 	if m.db == nil {
 		return errors.New("database client is unavailable")
 	}
-	if err := m.db.PingContext(ctx); err != nil {
+	if err := m.probeDatabase(ctx); err != nil {
 		return fmt.Errorf("database probe failed: %w", err)
 	}
 	if m.redis == nil {
@@ -53,6 +72,47 @@ func (m *Manager) Ready(ctx context.Context) error {
 		return fmt.Errorf("redis probe failed: %w", err)
 	}
 	return nil
+}
+
+func (m *Manager) probeDatabase(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	m.dbProbeMu.Lock()
+	probe := m.dbProbe
+	if probe == nil {
+		probe = &databaseProbe{done: make(chan struct{})}
+		m.dbProbe = probe
+		// lib/pq can remain blocked after ctx cancellation while it sends a
+		// separate cancel request. Keep that work bounded to one goroutine and
+		// let every readiness caller return on its own deadline. The shared
+		// probe gets its own deadline so one disconnected caller cannot cancel
+		// work that another caller is waiting for.
+		probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dependencyProbeTimeout)
+		go m.runDatabaseProbe(probeCtx, cancel, probe)
+	}
+	m.dbProbeMu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-probe.done:
+		return probe.err
+	}
+}
+
+func (m *Manager) runDatabaseProbe(ctx context.Context, cancel context.CancelFunc, probe *databaseProbe) {
+	defer cancel()
+	err := m.db.PingContext(ctx)
+
+	m.dbProbeMu.Lock()
+	probe.err = err
+	close(probe.done)
+	if m.dbProbe == probe {
+		m.dbProbe = nil
+	}
+	m.dbProbeMu.Unlock()
 }
 
 func (m *Manager) BeginDrain() { m.draining.Store(true) }

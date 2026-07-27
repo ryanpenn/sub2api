@@ -2,8 +2,10 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +14,32 @@ import (
 	"github.com/coder/websocket"
 	"github.com/redis/go-redis/v9"
 )
+
+type blockingDatabasePinger struct {
+	calls   atomic.Int32
+	started chan struct{}
+	release chan struct{}
+}
+
+func newBlockingDatabasePinger() *blockingDatabasePinger {
+	return &blockingDatabasePinger{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (p *blockingDatabasePinger) PingContext(ctx context.Context) error {
+	if p.calls.Add(1) == 1 {
+		close(p.started)
+		select {
+		case <-p.release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
 
 func TestManagerReadyAndDrain(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
@@ -87,5 +115,46 @@ func TestManagerDependencyFailureIsNotReady(t *testing.T) {
 	manager := NewManager(db, redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
 	if err := manager.Ready(context.Background()); err == nil {
 		t.Fatal("Ready() error = nil with unavailable dependencies")
+	}
+}
+
+func TestManagerReadyBoundsBlockedDatabaseProbe(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	pinger := newBlockingDatabasePinger()
+	manager := newManager(pinger, redis.NewClient(&redis.Options{Addr: redisServer.Addr()}))
+	probeCtx, cancelProbe := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancelProbe()
+
+	const callers = 3
+	errs := make(chan error, callers)
+	for range callers {
+		go func() {
+			errs <- manager.Ready(probeCtx)
+		}()
+	}
+
+	<-pinger.started
+	for range callers {
+		if err := <-errs; !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Ready() error = %v, want context deadline exceeded", err)
+		}
+	}
+	if got := pinger.calls.Load(); got != 1 {
+		t.Fatalf("PingContext() calls = %d, want 1 while probe is blocked", got)
+	}
+	followupCtx, cancelFollowup := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancelFollowup()
+	if err := manager.Ready(followupCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("follow-up Ready() error = %v, want context deadline exceeded", err)
+	}
+	if got := pinger.calls.Load(); got != 1 {
+		t.Fatalf("PingContext() calls = %d, want 1 after caller cancellation", got)
+	}
+
+	close(pinger.release)
+	recoveryCtx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := manager.Ready(recoveryCtx); err != nil {
+		t.Fatalf("Ready() after database recovery error = %v", err)
 	}
 }
