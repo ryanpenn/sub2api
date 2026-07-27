@@ -1,6 +1,6 @@
 # Sub2API 多节点部署实施计划
 
-> 状态：`G0/G1/G2/G3` 已通过；`G4` 未授权
+> 状态：`G0/G1/G2/G3` 已通过；`G4-A` 三副本启用已完成，`G4-B` 故障演练未授权
 > 创建日期：2026-07-26
 > 适用范围：三个 Multipass ARM64 节点的本地 Docker Swarm 验证，以及 AMD64 生产制品与配置基线
 > 方案来源：[`Sub2API-MultiNode-Deployment.md`](./Sub2API-MultiNode-Deployment.md)
@@ -11,11 +11,10 @@
 
 本文把已经完成的多节点部署方案拆解为可执行、可验证、可停止和可回滚的实施步骤。阶段编号严格沿用方案文档第 7 节：阶段 0 至阶段 5。
 
-当前已完成 `G1` 仓库侧实施、`G2` 首版制品发布、`G3` 本地单副本基线和阶段 3 多实例前置收敛。后续仍不执行下列操作：
+当前已完成 `G1` 仓库侧实施、`G2` 首版制品发布、`G3` 本地单副本基线、阶段 3 多实例前置收敛和 `G4-A` 三副本启用。后续仍不执行下列操作：
 
 - 不继续扩大阶段 3 运行时代码范围；新增修补仍须先有失败证据并重新审核白名单；
-- 不执行 G4 的 task kill、节点/依赖中断、OOM 或受控 migration 失败演练；
-- 不启用 node2/node3 的 Sub2API/Caddy 正式副本；
+- 不执行 `G4-B` 的 task kill、节点/依赖中断、OOM、受控 migration 失败、失败暂停或实际回滚演练；
 - 不执行生产部署、真实数据迁移或切流；
 - 不配置 DNSPod，不处理 DNS 故障节点摘除；
 - 不重复触发已完成的发布 workflow，不覆盖任何 release tag 或镜像 tag。
@@ -54,7 +53,7 @@
 | GoReleaser | 两份兼容配置只保留本地制品构建及完整 fork `main.Version`、`Commit/Date/BuildType` 注入，不包含 `dockers`、`docker_manifests` 或其他 registry publisher；集群发布不调用 GoReleaser |
 | G1 工具版本 | Go `1.26.5`、Docker Client `29.6.1`、GoTask `3.50.0`、GoReleaser `2.17.0`、actionlint `1.7.7` |
 | 本地节点 | `node1`、`node2`、`node3`，均为 Ubuntu ARM64、2 vCPU、4G 内存、20G 磁盘 |
-| Swarm/业务 service | 2026-07-27 已完成三 manager Swarm、共享数据 service、一次性 bootstrap 和 node1 单副本部署；PostgreSQL、Redis、Sub2API、Caddy 均为 `1/1` |
+| Swarm/业务 service | 2026-07-27 已完成三 manager Swarm、共享数据 service、一次性 bootstrap 和三节点应用/入口扩容；Sub2API/Caddy 均为 `3/3`，PostgreSQL/Redis 均为 `1/1` |
 
 若正式实施时 upstream VERSION、历史 ext 序号、节点状态或依赖版本已变化，先更新版本矩阵和实施输入，再继续；不得机械使用本快照。
 
@@ -78,10 +77,11 @@ flowchart LR
 | `G1` 仓库实施授权 | 允许修改版本/发布文件，创建 `backend/extends`、`deploy/cluster` 和测试；不推送镜像、不修改节点 | 已通过 |
 | `G2` 制品发布授权 | 允许向私有 GHCR 推送新的不可变 tag/manifest，并记录平台 digest | 已通过 |
 | `G3` 本地环境实施授权 | 允许安装/配置 Docker、初始化 Swarm、创建 Secret/Config/service/volume，并在三个 Multipass 节点部署 | 已通过 |
-| `G4` 故障演练授权 | 允许在本地测试环境执行 task kill、节点停止、依赖中断、OOM 和受控 migration 失败测试 | 未授权 |
+| `G4-A` 三副本启用授权 | 允许滚动 node1 到已审核候选版本、分发固定本地镜像、给 node2/node3 添加应用/入口 label，并做非破坏性三节点验证 | 已完成 |
+| `G4-B` 故障演练授权 | 允许在本地测试环境执行 task kill、节点停止、依赖中断、OOM、受控 migration 失败、失败暂停和实际回滚测试 | 未授权 |
 | `G5` 交付确认 | 确认本地验收结论并关闭实施计划 | 未授权 |
 
-任何授权都只覆盖表中动作。`G1` 不隐含 `G2/G3`，`G3` 不隐含 `G4`，本地完成不隐含生产授权。
+任何授权都只覆盖表中动作。`G1` 不隐含 `G2/G3`，`G4-A` 不隐含 `G4-B`，本地完成不隐含生产授权。
 
 ### 4.2 总体阶段状态
 
@@ -91,7 +91,7 @@ flowchart LR
 | 1. 节点与基础设施基线 | 已完成 | `G1`；涉及 GHCR/节点时再分别取得 `G2/G3` | 发布链、制品、配置骨架和三 manager 基线通过 |
 | 2. 数据服务与单副本基线 | 已完成 | 阶段 1 通过且已取得 `G3` | PostgreSQL/Redis、单次 bootstrap、单副本与本机 Caddy 基线通过 |
 | 3. 多实例前置收敛 | 已完成 | 阶段 2 通过且代码修补范围再次确认 | 必要 P0 修补、进程级测试、候选制品和三进程冷启动满足门槛；未启用 `node2`/`node3` 应用副本 |
-| 4. 三副本与故障演练 | 未开始 | 阶段 3 通过且已取得 `G4` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
+| 4. 三副本与故障演练 | 进行中（`S4-A` 已完成） | 阶段 3 通过；三副本启用和故障演练分别取得 `G4-A`/`G4-B` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
 | 5. 环境交付 | 未开始 | 阶段 4 通过 | 交付物、限制和验收报告完成并取得 `G5` |
 
 ## 5. 阶段 0：需求冻结与架构决策
@@ -427,7 +427,7 @@ deploy/cluster/
 - [x] 本地继续采用已审核的 host-mode `8080` 测试例外，未把它误判为已关闭；生产准入仍由防火墙或等价网络约束阻断绕过路径，不在阶段 3 增加网络控制面；
 - [x] 完成目标单元测试、进程级并发测试及 OAuth/WebSocket 协议级 stub/mock；真实双/三副本测试仍留在阶段 4；
 - [x] 沿用阶段 2 已验证的 Caddy shared Redis storage，并保留阶段 4 的跨节点证书协调/恢复测试步骤；
-- [x] `task validate:stack ENV=local` 与本地归档分发校验通过；候选镜像已加载 node1，但正式 Swarm service 仍固定 `v0.1.165-ext.1`，未提前执行 `release:apply`；
+- [x] 阶段 3 退出时，`task validate:stack ENV=local` 与本地归档分发校验通过；候选镜像只加载 node1，正式 Swarm service 仍固定 `v0.1.165-ext.1`，未提前执行 `release:apply`；后续正式切换已在获授权的 G4-A 完成；
 - [x] 人工上游同步演练不作为本地退出门槛；同步仍由人工按需发起。
 
 ### 8.8 修改隔离白名单
@@ -476,7 +476,7 @@ deploy/cluster/
 
 ### 8.10 阶段 3 实施记录（2026-07-27）
 
-当前状态：**阶段 3 已通过；候选镜像只加载到 node1 并完成隔离验证，正式 Swarm service 未更新；未进入阶段 4。**
+当前状态：**阶段 3 已通过；其退出时的候选与隔离验证证据保持有效，后续 G4-A 已将该候选部署到三个正式副本。**
 
 | 风险证据 | 必要最小改造 | 验证 | 未增加内容 |
 | --- | --- | --- | --- |
@@ -500,23 +500,32 @@ deploy/cluster/
 - AMD64 同提交构建烟测通过，source image ID 为 `sha256:da61f82e6ec3dee3c0e9b311e224f970fa5f7245aa652cc7ddfa105f594da0a8`；未推送 GHCR，不写入生产部署清单；
 - 全新数据库三进程并发 bootstrap 在 3.497 秒内全部 `/ready=200`；236/236 migration 唯一、0 checksum 异常、0 重复 filename，最终恰好 1 个管理员，另外两个实例幂等跳过；
 - `git diff --check`：通过；
-- 验证容器、临时数据库、Redis DB 15 和临时归档均已清理；正式 Swarm service 仍为 `v0.1.165-ext.1`；未执行三副本、故障注入或生产发布。
+- 验证容器、临时数据库、Redis DB 15 和临时归档均已清理；阶段 3 退出时正式 Swarm service 仍为 `v0.1.165-ext.1`，当时未执行三副本、故障注入或生产发布；后续三副本启用单独记录在第 9.1 节。
 
-阶段 3 的本地退出门槛已经关闭。host-mode `8080` 在本地仍是已接受的测试例外，生产防火墙验证属于生产准入而非本阶段伪完成项。阶段 3 通过不等于 `G4` 授权，也不等于正式 service 已滚动到候选版本。
+阶段 3 的本地退出门槛已经关闭。host-mode `8080` 在本地仍是已接受的测试例外，生产防火墙验证属于生产准入而非本阶段伪完成项。阶段 3 通过本身不等于后续阶段授权；正式 service 的切换与三副本启用由后续获授权的 G4-A 单独完成。
 
 ## 9. 阶段 4：三副本与故障演练
 
-阶段 4 需要 `G4`。所有故障注入只作用于本地测试环境，不触碰生产或已有生产数据。
+阶段 4 拆分授权：`G4-A` 只覆盖三副本启用和非破坏性验证，已执行完成；`G4-B` 才覆盖故障注入、失败暂停和实际回滚，当前未授权。所有故障注入只允许作用于本地测试环境，不触碰生产或已有生产数据。
 
 ### 9.1 S4-A：启用三个 global 副本
 
-- [ ] 确认阶段 3 制品、Config/Secret 和回滚目标已固定；
-- [ ] 给 `node2`、`node3` 添加 `sub2api=true`/`caddy=true`；
-- [ ] 验证 Sub2API/Caddy `global` service 在每个合格节点恰好一个 task；
-- [ ] 验证每个 Caddy 固定代理本机 Sub2API，未经过 routing mesh；
-- [ ] 使用同一 Local CA，通过 `curl --noproxy '*' --resolve` 分别访问三个节点；
-- [ ] 核对三个 Caddy 的证书 subject、serial、指纹和 Caddyfile Config；
-- [ ] 核对三个 Sub2API 的镜像 digest、完整版本、配置对象和节点落位。
+- [x] 确认阶段 3 制品、Config/Secret 和回滚目标已固定；
+- [x] 给 `node2`、`node3` 添加 `sub2api=true`/`caddy=true`；
+- [x] 验证 Sub2API/Caddy `global` service 在每个合格节点恰好一个 task；
+- [x] 验证每个 Caddy 固定代理本机 Sub2API，未经过 routing mesh；
+- [x] 使用同一 Local CA，通过 `curl --noproxy '*' --resolve` 分别访问三个节点；
+- [x] 核对三个 Caddy 的证书 subject、serial、指纹和 Caddyfile Config；
+- [x] 核对三个 Sub2API 的固定 image ID、完整版本、配置对象和节点落位。
+
+实施记录（2026-07-27）：
+
+- 先通过 `release:plan -> apply -> verify` 将 node1 正式单副本从 `v0.1.165-ext.1` 更新为 `v0.1.165-ext.2`；运行镜像报告完整版本 `0.1.165-ext.2` 与 commit `9aca50a8fd1ad34de6ef6ecf08eb58800a19fa89`，Swarm `UpdateStatus=completed`，`PreviousSpec` 与 node1 保留的旧镜像均明确指向 `ext.1`，本轮未实际执行 rollback；
+- 固定 ARM64 归档按既有 SHA-256 门禁装载到 node1/node2/node3，三个节点的 Sub2API image ID 均为 `sha256:bb638caa30eac89bf8bb5ee6395361f941f83fc0f810150249901ba896561703`，Caddy image ID 均为 `sha256:26a85a756bcbd9d2f94d9bc55e48fce85ee55cf181b6002a3c82e1292504b739`；
+- node2、node3 依次添加 `sub2api=true`/`caddy=true`，每加入一个节点都等待 Sub2API/Caddy task Running 且该节点 `/ready=200` 后再继续；最终 Sub2API/Caddy 为 `3/3`，PostgreSQL/Redis 保持 `1/1`；
+- 三个入口均通过同一 Caddy Local CA 根证书（SHA-256 指纹 `1C:F3:6C:A9:FF:B0:AE:B9:25:3E:B0:47:95:D4:76:5A:F0:41:B8:EE:3A:B7:7A:07:58:E4:F9:7A:89:93:A2:CB`）完成 TLS 与 JSON `/ready` 验证；叶证书 subject 为空、关键 SAN 均为 `DNS:sub2api.test`，serial 均为 `6A756405F963CC3B7D3310DCAF348F5B`，SHA-256 指纹均为 `40:FD:12:CF:C3:3C:C4:B8:45:80:75:AD:1F:09:91:C1:4E:A2:5D:FA:50:C5:F1:C2:3E:5C:C1:D5:A6:F3:15:7A`；
+- 三个正式 task 共享同一个 app-config Secret object ID `zigvsbccbvfjy72y9d9brm22f`、模型价格 Config object ID `ceb9vk5ho18xufxcxufvqzo15` 和 Caddyfile Config object ID `ynvvg8m2fjlgb12glq1jjc0ch`；三个入口的在线更新检查均由 Caddy 返回 `403`；
+- `/ready` 同时探测共享 PostgreSQL/Redis，三个节点均返回 200；近 10 分钟 Sub2API migration/panic/fatal 与 Caddy certificate/panic/fatal 关键错误计数均为 0。该结果只关闭 `S4-A`，不替代 OAuth、SSE/WebSocket、生图、续期/恢复、容量或故障专项。
 
 ### 9.2 S4-B：多实例功能专项
 
@@ -568,7 +577,7 @@ deploy/cluster/
 
 ### 9.6 阶段 4 退出门槛
 
-- [ ] 三个 Sub2API/Caddy task 稳定且每节点最多一个；
+- [x] 三个 Sub2API/Caddy task 稳定且每节点最多一个；
 - [ ] 多实例安全专项全部通过；
 - [ ] shared TLS storage、续期协调和恢复行为通过；
 - [ ] 滚动更新、失败暂停和旧组合回滚可复现；
@@ -692,8 +701,8 @@ deploy/cluster/
 - [x] 阶段 2 单副本采用“仅 node1 添加应用/入口 label”的过渡方式已实施；
 - [x] 阶段 3 按 P0/P1 和失败证据顺序实施；
 - [x] 阶段 3 修改文件已同步收敛到第 8.8 节白名单，条件提交均有证据；
-- [ ] 阶段 4 故障注入范围是否接受；
+- [ ] `G4-B` 阶段 4 故障注入范围是否接受；
 - [ ] 阶段 5 交付物是否足够；
-- [x] `G1/G2/G3` 已分别授权并完成；`G4` 未授权。
+- [x] `G1/G2/G3` 已分别授权并完成；`G4-A` 已完成，`G4-B` 未授权。
 
-当前 G0/G1/G2/G3 与实施阶段 0 至阶段 3 均已通过。下一步先审核 `v0.1.165-ext.2` 候选提交链、归档身份和三进程冷启动证据，再单独决定是否授权 `G4`；未授权前不添加 node2/node3 应用 label、不更新正式 service、不做故障注入。
+当前 G0/G1/G2/G3、实施阶段 0 至阶段 3 和 `S4-A` 均已通过。下一步先审核本节三副本启用证据，再单独决定是否授权 `G4-B`；未授权前不执行 task kill、节点/依赖中断、OOM、失败暂停、实际回滚或其他故障注入。

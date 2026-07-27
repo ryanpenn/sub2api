@@ -1,6 +1,6 @@
 # GoTask 发布与运维手册
 
-> 状态：G1/G2/G3 已通过；G4 未授权
+> 状态：G1/G2/G3 已通过；G4-A 三副本启用已完成，G4-B 故障演练未授权
 > 适用范围：Sub2API Docker Swarm 本地 ARM64 验证与后续 AMD64 生产环境
 > 基线日期：2026-07-27（Asia/Shanghai）
 
@@ -43,7 +43,7 @@ GoTask 不是长驻运维平台，不承担：
 | 变量 | 用途 | 示例 |
 | --- | --- | --- |
 | `ENV` | 目标环境 | `local`、`production` |
-| `RELEASE` | fork 发布版本 | `v0.1.165-ext.1` |
+| `RELEASE` | fork 发布版本 | `v0.1.165-ext.2` |
 | `NODE` | Swarm 节点名 | `node3`、`node4` |
 | `SERVICE` | 查询日志/状态的 service | `sub2api`、`caddy` |
 | `CONFIRM` | 高风险任务的非敏感确认字符串 | `bootstrap-sub2api` |
@@ -189,8 +189,8 @@ cd deploy/cluster
 
 task validate:environment ENV=local
 task validate:stack ENV=local
-task release:plan ENV=local RELEASE=v0.1.165-ext.1
-task release:apply ENV=local RELEASE=v0.1.165-ext.1
+task release:plan ENV=local RELEASE=v0.1.165-ext.2
+task release:apply ENV=local RELEASE=v0.1.165-ext.2
 task release:bootstrap ENV=local CONFIRM=bootstrap-sub2api
 # bootstrap 成功后，人工给 node1 添加 sub2api=true/caddy=true label
 task release:verify ENV=local
@@ -220,7 +220,7 @@ curl --noproxy '*' \
   https://sub2api.test/health
 ```
 
-阶段 4 启用 node2/node3 后，再把两个地址加入 `ACTIVE_NODE_ADDRESSES` 并逐节点验证。阶段 3 合入 ext readiness 后将路径替换为 `/ready`。只检查 `docker service ls` 不足以判定发布成功；必须验证当前活动节点的真实入口、运行版本和共享依赖。
+G4-A 已启用 node2/node3，并把三个地址全部加入 `ACTIVE_NODE_ADDRESSES`；当前逐节点验证路径为 `/ready`。只检查 `docker service ls` 不足以判定发布成功；必须验证当前活动节点的真实入口、运行版本和共享依赖。
 
 ## 6. 更新与回滚
 
@@ -396,7 +396,7 @@ nodes:
 ```bash
 task validate:environment ENV=local
 task validate:stack ENV=local
-task release:plan ENV=local RELEASE=v0.1.165-ext.1
+task release:plan ENV=local RELEASE=v0.1.165-ext.2
 ```
 
 通过审核后让 Node4 恢复调度；Swarm 会根据现有 `global` service 自动创建两个 task，无需为了扩容重新构建镜像：
