@@ -50,13 +50,40 @@ const (
 )
 
 type GeminiOAuthService struct {
-	sessionStore *geminicli.SessionStore
+	sessionStore GeminiOAuthSessionStore
 	proxyRepo    ProxyRepository
 	oauthClient  GeminiOAuthClient
 	codeAssist   GeminiCliCodeAssistClient
 	driveClient  geminicli.DriveClient
 	cfg          *config.Config
 }
+
+type GeminiOAuthSessionStore interface {
+	Put(context.Context, string, *geminicli.OAuthSession) error
+	Take(context.Context, string, string) (*geminicli.OAuthSession, bool, bool, error)
+	Stop()
+}
+
+type geminiMemoryOAuthSessionStore struct{ store *geminicli.SessionStore }
+
+func (s geminiMemoryOAuthSessionStore) Put(_ context.Context, id string, session *geminicli.OAuthSession) error {
+	s.store.Set(id, session)
+	return nil
+}
+
+func (s geminiMemoryOAuthSessionStore) Take(_ context.Context, id, expectedState string) (*geminicli.OAuthSession, bool, bool, error) {
+	session, ok := s.store.Get(id)
+	if !ok {
+		return nil, false, false, nil
+	}
+	matched := expectedState == session.State
+	if matched {
+		s.store.Delete(id)
+	}
+	return session, true, matched, nil
+}
+
+func (s geminiMemoryOAuthSessionStore) Stop() { s.store.Stop() }
 
 type GeminiOAuthCapabilities struct {
 	AIStudioOAuthEnabled bool     `json:"ai_studio_oauth_enabled"`
@@ -70,8 +97,19 @@ func NewGeminiOAuthService(
 	driveClient geminicli.DriveClient,
 	cfg *config.Config,
 ) *GeminiOAuthService {
+	return NewGeminiOAuthServiceWithSessionStore(proxyRepo, oauthClient, codeAssist, driveClient, cfg, geminiMemoryOAuthSessionStore{store: geminicli.NewSessionStore()})
+}
+
+func NewGeminiOAuthServiceWithSessionStore(
+	proxyRepo ProxyRepository,
+	oauthClient GeminiOAuthClient,
+	codeAssist GeminiCliCodeAssistClient,
+	driveClient geminicli.DriveClient,
+	cfg *config.Config,
+	sessionStore GeminiOAuthSessionStore,
+) *GeminiOAuthService {
 	return &GeminiOAuthService{
-		sessionStore: geminicli.NewSessionStore(),
+		sessionStore: sessionStore,
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
 		codeAssist:   codeAssist,
@@ -146,7 +184,9 @@ func (s *GeminiOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 		OAuthType:    oauthType,
 		CreatedAt:    time.Now(),
 	}
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Put(ctx, sessionID, session); err != nil {
+		return nil, fmt.Errorf("failed to store oauth session: %w", err)
+	}
 
 	effectiveCfg, err := geminicli.EffectiveOAuthConfig(oauthCfg, oauthType)
 	if err != nil {
@@ -169,7 +209,9 @@ func (s *GeminiOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 		redirectURI = geminicli.AIStudioOAuthRedirectURI
 	}
 	session.RedirectURI = redirectURI
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Put(ctx, sessionID, session); err != nil {
+		return nil, fmt.Errorf("failed to update oauth session: %w", err)
+	}
 
 	authURL, err := geminicli.BuildAuthorizationURL(effectiveCfg, state, codeChallenge, redirectURI, session.ProjectID, oauthType)
 	if err != nil {
@@ -446,12 +488,21 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ========== ExchangeCode START ==========")
 	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] SessionID: %s", input.SessionID)
 
-	session, ok := s.sessionStore.Get(input.SessionID)
+	expectedState := strings.TrimSpace(input.State)
+	if expectedState == "" {
+		logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ERROR: Invalid state")
+		return nil, fmt.Errorf("invalid state")
+	}
+	session, ok, stateMatch, err := s.sessionStore.Take(ctx, input.SessionID, expectedState)
+	if err != nil {
+		logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ERROR: Session store failed: %v", err)
+		return nil, fmt.Errorf("oauth session store failed: %w", err)
+	}
 	if !ok {
 		logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ERROR: Session not found or expired")
 		return nil, fmt.Errorf("session not found or expired")
 	}
-	if strings.TrimSpace(input.State) == "" || input.State != session.State {
+	if !stateMatch {
 		logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ERROR: Invalid state")
 		return nil, fmt.Errorf("invalid state")
 	}
@@ -506,8 +557,6 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] Token expires_in: %d seconds", tokenResp.ExpiresIn)
 
 	sessionProjectID := strings.TrimSpace(session.ProjectID)
-	s.sessionStore.Delete(input.SessionID)
-
 	// 计算过期时间：减去 5 分钟安全时间窗口（考虑网络延迟和时钟偏差）
 	// 同时设置下界保护，防止 expires_in 过小导致过去时间（引发刷新风暴）
 	const safetyWindow = 300 // 5 minutes

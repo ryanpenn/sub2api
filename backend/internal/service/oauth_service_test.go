@@ -159,7 +159,10 @@ func TestOAuthService_GenerateAuthURL(t *testing.T) {
 	}
 
 	// 验证 session 已存储
-	session, ok := svc.sessionStore.Get(result.SessionID)
+	session, ok, _, err := svc.sessionStore.Take(context.Background(), result.SessionID, "")
+	if err != nil {
+		t.Fatalf("读取 session 失败: %v", err)
+	}
 	if !ok {
 		t.Fatal("session 未在 sessionStore 中找到")
 	}
@@ -190,7 +193,10 @@ func TestOAuthService_GenerateAuthURL_WithProxy(t *testing.T) {
 		t.Fatalf("GenerateAuthURL 返回错误: %v", err)
 	}
 
-	session, ok := svc.sessionStore.Get(result.SessionID)
+	session, ok, _, err := svc.sessionStore.Take(context.Background(), result.SessionID, "")
+	if err != nil {
+		t.Fatalf("读取 session 失败: %v", err)
+	}
 	if !ok {
 		t.Fatal("session 未在 sessionStore 中找到")
 	}
@@ -214,7 +220,10 @@ func TestOAuthService_GenerateSetupTokenURL(t *testing.T) {
 	}
 
 	// 验证 scope 是 inference
-	session, ok := svc.sessionStore.Get(result.SessionID)
+	session, ok, _, err := svc.sessionStore.Take(context.Background(), result.SessionID, "")
+	if err != nil {
+		t.Fatalf("读取 session 失败: %v", err)
+	}
 	if !ok {
 		t.Fatal("session 未在 sessionStore 中找到")
 	}
@@ -313,7 +322,10 @@ func TestOAuthService_ExchangeCode_Success(t *testing.T) {
 	}
 
 	// 验证 session 已被删除
-	_, ok := svc.sessionStore.Get(result.SessionID)
+	_, ok, _, err := svc.sessionStore.Take(context.Background(), result.SessionID, "")
+	if err != nil {
+		t.Fatalf("读取 session 失败: %v", err)
+	}
 	if ok {
 		t.Fatal("session 应在交换成功后被删除")
 	}

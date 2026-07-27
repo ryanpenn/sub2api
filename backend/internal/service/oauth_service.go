@@ -41,15 +41,42 @@ type ClaudeOAuthClient interface {
 
 // OAuthService handles OAuth authentication flows
 type OAuthService struct {
-	sessionStore *oauth.SessionStore
+	sessionStore ClaudeOAuthSessionStore
 	proxyRepo    ProxyRepository
 	oauthClient  ClaudeOAuthClient
 }
 
+type ClaudeOAuthSessionStore interface {
+	Put(context.Context, string, *oauth.OAuthSession) error
+	Take(context.Context, string, string) (*oauth.OAuthSession, bool, bool, error)
+	Stop()
+}
+
+type claudeMemoryOAuthSessionStore struct{ store *oauth.SessionStore }
+
+func (s claudeMemoryOAuthSessionStore) Put(_ context.Context, id string, session *oauth.OAuthSession) error {
+	s.store.Set(id, session)
+	return nil
+}
+
+func (s claudeMemoryOAuthSessionStore) Take(_ context.Context, id, _ string) (*oauth.OAuthSession, bool, bool, error) {
+	session, ok := s.store.Get(id)
+	if ok {
+		s.store.Delete(id)
+	}
+	return session, ok, ok, nil
+}
+
+func (s claudeMemoryOAuthSessionStore) Stop() { s.store.Stop() }
+
 // NewOAuthService creates a new OAuth service
 func NewOAuthService(proxyRepo ProxyRepository, oauthClient ClaudeOAuthClient) *OAuthService {
+	return NewOAuthServiceWithSessionStore(proxyRepo, oauthClient, claudeMemoryOAuthSessionStore{store: oauth.NewSessionStore()})
+}
+
+func NewOAuthServiceWithSessionStore(proxyRepo ProxyRepository, oauthClient ClaudeOAuthClient, sessionStore ClaudeOAuthSessionStore) *OAuthService {
 	return &OAuthService{
-		sessionStore: oauth.NewSessionStore(),
+		sessionStore: sessionStore,
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
 	}
@@ -109,7 +136,9 @@ func (s *OAuthService) generateAuthURLWithScope(ctx context.Context, scope strin
 		ProxyURL:     proxyURL,
 		CreatedAt:    time.Now(),
 	}
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Put(ctx, sessionID, session); err != nil {
+		return nil, fmt.Errorf("failed to store oauth session: %w", err)
+	}
 
 	// Build authorization URL
 	authURL := oauth.BuildAuthorizationURL(state, codeChallenge, scope)
@@ -143,7 +172,10 @@ type TokenInfo struct {
 // ExchangeCode exchanges authorization code for tokens
 func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInput) (*TokenInfo, error) {
 	// Get session
-	session, ok := s.sessionStore.Get(input.SessionID)
+	session, ok, _, err := s.sessionStore.Take(ctx, input.SessionID, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to consume oauth session: %w", err)
+	}
 	if !ok {
 		return nil, fmt.Errorf("session not found or expired")
 	}
@@ -165,9 +197,6 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 	if err != nil {
 		return nil, err
 	}
-
-	// Delete session after successful exchange
-	s.sessionStore.Delete(input.SessionID)
 
 	return tokenInfo, nil
 }

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/extends"
+	"github.com/Wei-Shaw/sub2api/extends/lifecycle"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
@@ -18,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	"github.com/Wei-Shaw/sub2api/internal/server"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/server/routes"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/google/wire"
@@ -28,12 +31,16 @@ type Application struct {
 	Server      *http.Server
 	PromptAudit *securityaudit.PromptService
 	Cleanup     func()
+	Lifecycle   *lifecycle.Manager
 }
 
 func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	wire.Build(
 		// Infrastructure layer ProviderSets
 		config.ProviderSet,
+		extends.ProviderSet,
+		wire.Bind(new(routes.RuntimeState), new(*lifecycle.Manager)),
+		wire.Bind(new(handler.WebSocketLifecycle), new(*lifecycle.Manager)),
 
 		// Business layer ProviderSets
 		repository.ProviderSet,
@@ -56,7 +63,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		provideCleanup,
 
 		// Application struct
-		wire.Struct(new(Application), "Server", "PromptAudit", "Cleanup"),
+		wire.Struct(new(Application), "Server", "PromptAudit", "Cleanup", "Lifecycle"),
 	)
 	return nil, nil
 }

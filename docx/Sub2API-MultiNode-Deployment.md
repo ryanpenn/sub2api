@@ -405,7 +405,7 @@ curl --noproxy '*' --cacert /tmp/sub2api-caddy-root.crt \
   --resolve sub2api.test:443:192.168.252.4 https://sub2api.test/health
 ```
 
-当前上游基线可先使用 `/health` 验证域名、TLS 和代理链路；ext 提供 `/ready` 后，再以相同方式补做 readiness 验收。
+当前已部署的 `v0.1.165-ext.1` 单副本基线仍可用 `/health` 验证域名、TLS 和代理链路。阶段 3 分支已实现 `/ready`，下一候选镜像发布后必须以相同方式补做 readiness 验收，不能在旧镜像上提前切换运行态探针。
 
 首次签发完成后，从任一 Caddy 的本机 admin API 导出 Local CA 根证书。admin API 只监听节点回环地址，不向局域网或公网开放：
 
@@ -798,7 +798,7 @@ resources:
   sub2api_gomemlimit: 1536MiB
 ```
 
-`node2:6379` 只为 host-network Caddy 提供 Multipass 私网端点；Redis service 仍同时接入应用 overlay network，供 Sub2API 使用 `redis:6379`。宿主机防火墙必须只允许三个节点访问该私网端口，不允许宿主机其他网络或公网访问。正式副本启动前，只运行一个临时 bootstrap 实例完成 `AUTO_SETUP`，随后关闭并将三个正式副本统一设置为 `AUTO_SETUP=false`。阶段 2 尚未合入 ext readiness 时，Stack 的 `SUB2API_HEALTH_PATH` 暂用现有 `/health`；阶段 3 合入并验证 readiness 后，在同一发布变更中切换为 `/ready`，不为此增加应用开关。
+`node2:6379` 只为 host-network Caddy 提供 Multipass 私网端点；Redis service 仍同时接入应用 overlay network，供 Sub2API 使用 `redis:6379`。宿主机防火墙必须只允许三个节点访问该私网端口，不允许宿主机其他网络或公网访问。正式副本启动前，只运行一个临时 bootstrap 实例完成 `AUTO_SETUP`，随后关闭并将三个正式副本统一设置为 `AUTO_SETUP=false`。阶段 3 分支已经实现 ext readiness，候选部署模板已将 `SUB2API_HEALTH_PATH` 切换为 `/ready`；该切换只能与包含 `/ready` 的新镜像一起发布，不为此增加应用开关。
 
 测试环境 Caddyfile 基线：
 
@@ -833,7 +833,7 @@ sub2api.test {
 }
 ```
 
-在 ext `/ready` 完成前，入口链路首次基线可临时用 `/health` 验证，但不能把它作为最终 readiness 验收。测试配置不使用 `/etc/hosts` 多 IP 轮询；按第 6.3.6 节使用 `curl --resolve` 精确访问每个节点。
+旧的 `v0.1.165-ext.1` 入口链路基线可继续用 `/health` 验证，但不能把它作为最终 readiness 验收。阶段 3 候选镜像必须使用 `/ready`。测试配置不使用 `/etc/hosts` 多 IP 轮询；按第 6.3.6 节使用 `curl --resolve` 精确访问每个节点。
 
 #### 6.7.6 线上生产环境配置（AMD64）
 
@@ -1566,6 +1566,7 @@ task ops:node-status
 | 2026-07-26 | 并发槽启动清理采用现有 TTL 最小修补 | 已确认 P0 | 不跨 prefix 误删、不无条件删除共享等待计数；不新增 owner 实体或 heartbeat |
 | 2026-07-26 | 图片并发保持每副本本地 limiter | 已确认证据门槛 | 不增加 Redis 集群总计数；统一启用和参数；同步/异步复用路径与 Batch 不重复接入，只有具体高内存入口失败测试成立时才最小补齐 |
 | 2026-07-26 | 分离 liveness/readiness 并增加排空 | 已确认 | `/health` 保留，ext 增加 `/ready` 和进程内 draining；退出窗口可配置并与 Swarm `stop_grace_period` 对齐 |
+| 2026-07-27 | 完成阶段 3 代码收敛 | 待提交审核 | Redis OAuth SessionStore、启动槽清理、`/ready`、40 秒排空、WebSocket 1012、两个已证实图片 limiter 遗漏及 Scheduled Test leader lock 已完成；未构建/部署新镜像，未授权阶段 4 |
 | 2026-07-26 | WebSocket 采用进程内登记与到期重连 | 已确认第一期最小范围 | draining 拒绝新 upgrade；已有连接可继续到窗口结束并在到期发送 `1012 Service Restart`；第一期不识别当前/new turn，不迁移连接，不使用 Redis 或新增实体 |
 | 2026-07-26 | WebSocket 连接绑定状态保持进程内 | 已确认 | 重连建立新连接，不跨副本续接未完成 turn；仅确需跨请求/副本读取的状态复用现有 Redis，不新增实体 |
 | 2026-07-26 | 保留应用启动 migration 并由 PostgreSQL 锁串行化 | 已确认 | 不新增 migration Job/ext；三个副本可同时启动但不能同时执行 SQL；失败或超时副本不进入 ready，具体超时、`*_notx.sql` 恢复和 forward-only 回滚门槛见第 6.4.1 节 |

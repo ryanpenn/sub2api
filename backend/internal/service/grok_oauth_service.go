@@ -15,14 +15,45 @@ import (
 const grokDefaultAccessTokenTTL = 6 * time.Hour
 
 type GrokOAuthService struct {
-	sessionStore *xai.SessionStore
+	sessionStore GrokOAuthSessionStore
 	proxyRepo    ProxyRepository
 	oauthClient  GrokOAuthClient
 }
 
+type GrokOAuthSessionStore interface {
+	Put(context.Context, string, *xai.OAuthSession) error
+	Take(context.Context, string, string) (*xai.OAuthSession, bool, bool, error)
+	Stop()
+}
+
+type grokMemoryOAuthSessionStore struct{ store *xai.SessionStore }
+
+func (s grokMemoryOAuthSessionStore) Put(_ context.Context, id string, session *xai.OAuthSession) error {
+	s.store.Set(id, session)
+	return nil
+}
+
+func (s grokMemoryOAuthSessionStore) Take(_ context.Context, id, expectedState string) (*xai.OAuthSession, bool, bool, error) {
+	session, ok := s.store.Get(id)
+	if !ok {
+		return nil, false, false, nil
+	}
+	matched := expectedState == "" || subtle.ConstantTimeCompare([]byte(expectedState), []byte(session.State)) == 1
+	if matched {
+		s.store.Delete(id)
+	}
+	return session, true, matched, nil
+}
+
+func (s grokMemoryOAuthSessionStore) Stop() { s.store.Stop() }
+
 func NewGrokOAuthService(proxyRepo ProxyRepository, oauthClient GrokOAuthClient) *GrokOAuthService {
+	return NewGrokOAuthServiceWithSessionStore(proxyRepo, oauthClient, grokMemoryOAuthSessionStore{store: xai.NewSessionStore()})
+}
+
+func NewGrokOAuthServiceWithSessionStore(proxyRepo ProxyRepository, oauthClient GrokOAuthClient, sessionStore GrokOAuthSessionStore) *GrokOAuthService {
 	return &GrokOAuthService{
-		sessionStore: xai.NewSessionStore(),
+		sessionStore: sessionStore,
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
 	}
@@ -64,7 +95,7 @@ func (s *GrokOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64, 
 		return nil, infraerrors.Newf(http.StatusBadRequest, "GROK_OAUTH_INVALID_AUTHORIZE_URL", "%v", err)
 	}
 
-	s.sessionStore.Set(sessionID, &xai.OAuthSession{
+	if err := s.sessionStore.Put(ctx, sessionID, &xai.OAuthSession{
 		State:         state,
 		CodeVerifier:  codeVerifier,
 		CodeChallenge: codeChallenge,
@@ -73,7 +104,9 @@ func (s *GrokOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64, 
 		ProxyURL:      proxyURL,
 		RedirectURI:   redirectURI,
 		CreatedAt:     time.Now(),
-	})
+	}); err != nil {
+		return nil, infraerrors.Newf(http.StatusServiceUnavailable, "GROK_OAUTH_SESSION_STORE_FAILED", "failed to store oauth session: %v", err)
+	}
 
 	return &GrokAuthURLResult{
 		AuthURL:   authURL,
@@ -110,12 +143,6 @@ func (s *GrokOAuthService) ExchangeCode(ctx context.Context, input *GrokExchange
 	if input == nil {
 		return nil, infraerrors.New(http.StatusBadRequest, "GROK_OAUTH_INVALID_INPUT", "input is required")
 	}
-	session, ok := s.sessionStore.Get(input.SessionID)
-	if !ok {
-		return nil, infraerrors.New(http.StatusBadRequest, "GROK_OAUTH_SESSION_NOT_FOUND", "session not found or expired")
-	}
-	defer s.sessionStore.Delete(input.SessionID)
-
 	parsed := xai.ParseAuthorizationInput(input.Code)
 	code := strings.TrimSpace(parsed.Code)
 	if code == "" {
@@ -128,7 +155,14 @@ func (s *GrokOAuthService) ExchangeCode(ctx context.Context, input *GrokExchange
 	if parsed.RequiresState && state == "" {
 		return nil, infraerrors.New(http.StatusBadRequest, "GROK_OAUTH_STATE_REQUIRED", "oauth state is required for callback URLs")
 	}
-	if state != "" && subtle.ConstantTimeCompare([]byte(state), []byte(session.State)) != 1 {
+	session, ok, stateMatch, err := s.sessionStore.Take(ctx, input.SessionID, state)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusServiceUnavailable, "GROK_OAUTH_SESSION_STORE_FAILED", "failed to consume oauth session: %v", err)
+	}
+	if !ok {
+		return nil, infraerrors.New(http.StatusBadRequest, "GROK_OAUTH_SESSION_NOT_FOUND", "session not found or expired")
+	}
+	if !stateMatch {
 		return nil, infraerrors.New(http.StatusBadRequest, "GROK_OAUTH_INVALID_STATE", "invalid oauth state")
 	}
 

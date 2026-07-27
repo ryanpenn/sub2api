@@ -51,6 +51,7 @@ func TestLoadHTTPIngressSafetyDefaults(t *testing.T) {
 	cfg, err := Load()
 	require.NoError(t, err)
 	require.Equal(t, 10, cfg.Server.ReadHeaderTimeout)
+	require.Equal(t, 40, cfg.Server.ShutdownTimeout)
 	require.Equal(t, 64*1024, cfg.Server.MaxHeaderBytes)
 	require.Empty(t, cfg.Server.TrustedProxies)
 	require.False(t, cfg.Server.TrustedProxiesConfigured)
@@ -1433,6 +1434,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			name:    "server max request body size",
 			mutate:  func(c *Config) { c.Server.MaxRequestBodySize = -1 },
 			wantErr: "server.max_request_body_size",
+		},
+		{
+			name:    "server shutdown timeout exceeds swarm grace period",
+			mutate:  func(c *Config) { c.Server.ShutdownTimeout = 46 },
+			wantErr: "server.shutdown_timeout",
 		},
 		{
 			name: "h2c zero concurrent streams",

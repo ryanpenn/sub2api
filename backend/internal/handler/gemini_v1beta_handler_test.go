@@ -3,12 +3,35 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGeminiNativeImageGenerationUsesSharedLimiter(t *testing.T) {
+	require.True(t, isGeminiNativeImageGeneration("gemini-2.5-flash", []byte(`{"generationConfig":{"responseModalities":["TEXT","IMAGE"]}}`)))
+	shared := &imageConcurrencyLimiter{}
+	h := &GatewayHandler{
+		cfg: &config.Config{Gateway: config.GatewayConfig{ImageConcurrency: config.ImageConcurrencyConfig{
+			Enabled:               true,
+			MaxConcurrentRequests: 1,
+			OverflowMode:          config.ImageConcurrencyOverflowModeReject,
+		}}},
+		imageLimiter: shared,
+	}
+	release, acquired := h.acquireGeminiImageGenerationSlot(context.Background())
+	require.True(t, acquired)
+	blockedRelease, blocked := h.acquireGeminiImageGenerationSlot(context.Background())
+	if blockedRelease != nil {
+		blockedRelease()
+	}
+	require.False(t, blocked)
+	release()
+}
 
 // TestGeminiV1BetaHandler_PlatformRoutingInvariant 文档化并验证 Handler 层的平台路由逻辑不变量
 // 该测试确保 gemini 和 antigravity 平台的路由逻辑符合预期

@@ -179,11 +179,23 @@ func runMainServer() {
 
 	log.Println("Shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	app.Lifecycle.BeginDrain()
+	shutdownTimeout := time.Duration(cfg.Server.ShutdownTimeout) * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	if err := app.Server.Shutdown(ctx); err != nil {
-		log.Printf("Server forced to shutdown: %v", err)
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- app.Server.Shutdown(ctx) }()
+	if err := app.Lifecycle.WaitForWebSockets(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		log.Printf("WebSocket drain failed: %v", err)
+	}
+	shutdownErr := <-shutdownDone
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		app.Lifecycle.CloseWebSockets()
+		_ = app.Server.Close()
+	}
+	if shutdownErr != nil && !errors.Is(shutdownErr, context.DeadlineExceeded) {
+		log.Printf("Server forced to shutdown: %v", shutdownErr)
 	}
 
 	log.Println("Server exited")

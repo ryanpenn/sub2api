@@ -11,13 +11,44 @@ import (
 )
 
 type AntigravityOAuthService struct {
-	sessionStore *antigravity.SessionStore
+	sessionStore AntigravityOAuthSessionStore
 	proxyRepo    ProxyRepository
 }
 
+type AntigravityOAuthSessionStore interface {
+	Put(context.Context, string, *antigravity.OAuthSession) error
+	Take(context.Context, string, string) (*antigravity.OAuthSession, bool, bool, error)
+	Stop()
+}
+
+type antigravityMemoryOAuthSessionStore struct{ store *antigravity.SessionStore }
+
+func (s antigravityMemoryOAuthSessionStore) Put(_ context.Context, id string, session *antigravity.OAuthSession) error {
+	s.store.Set(id, session)
+	return nil
+}
+
+func (s antigravityMemoryOAuthSessionStore) Take(_ context.Context, id, expectedState string) (*antigravity.OAuthSession, bool, bool, error) {
+	session, ok := s.store.Get(id)
+	if !ok {
+		return nil, false, false, nil
+	}
+	matched := expectedState == session.State
+	if matched {
+		s.store.Delete(id)
+	}
+	return session, true, matched, nil
+}
+
+func (s antigravityMemoryOAuthSessionStore) Stop() { s.store.Stop() }
+
 func NewAntigravityOAuthService(proxyRepo ProxyRepository) *AntigravityOAuthService {
+	return NewAntigravityOAuthServiceWithSessionStore(proxyRepo, antigravityMemoryOAuthSessionStore{store: antigravity.NewSessionStore()})
+}
+
+func NewAntigravityOAuthServiceWithSessionStore(proxyRepo ProxyRepository, sessionStore AntigravityOAuthSessionStore) *AntigravityOAuthService {
 	return &AntigravityOAuthService{
-		sessionStore: antigravity.NewSessionStore(),
+		sessionStore: sessionStore,
 		proxyRepo:    proxyRepo,
 	}
 }
@@ -60,7 +91,9 @@ func (s *AntigravityOAuthService) GenerateAuthURL(ctx context.Context, proxyID *
 		ProxyURL:     proxyURL,
 		CreatedAt:    time.Now(),
 	}
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Put(ctx, sessionID, session); err != nil {
+		return nil, fmt.Errorf("存储 OAuth session 失败: %w", err)
+	}
 
 	codeChallenge := antigravity.GenerateCodeChallenge(codeVerifier)
 	authURL := antigravity.BuildAuthorizationURL(state, codeChallenge)
@@ -96,12 +129,18 @@ type AntigravityTokenInfo struct {
 
 // ExchangeCode 用 authorization code 交换 token
 func (s *AntigravityOAuthService) ExchangeCode(ctx context.Context, input *AntigravityExchangeCodeInput) (*AntigravityTokenInfo, error) {
-	session, ok := s.sessionStore.Get(input.SessionID)
+	expectedState := strings.TrimSpace(input.State)
+	if expectedState == "" {
+		return nil, fmt.Errorf("state 无效")
+	}
+	session, ok, stateMatch, err := s.sessionStore.Take(ctx, input.SessionID, expectedState)
+	if err != nil {
+		return nil, fmt.Errorf("读取 OAuth session 失败: %w", err)
+	}
 	if !ok {
 		return nil, fmt.Errorf("session 不存在或已过期")
 	}
-
-	if strings.TrimSpace(input.State) == "" || input.State != session.State {
+	if !stateMatch {
 		return nil, fmt.Errorf("state 无效")
 	}
 
@@ -124,9 +163,6 @@ func (s *AntigravityOAuthService) ExchangeCode(ctx context.Context, input *Antig
 	if err != nil {
 		return nil, fmt.Errorf("token 交换失败: %w", err)
 	}
-
-	// 删除 session
-	s.sessionStore.Delete(input.SessionID)
 
 	// 计算过期时间（减去 5 分钟安全窗口）
 	expiresAt := time.Now().Unix() + tokenResp.ExpiresIn - 300

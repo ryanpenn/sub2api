@@ -109,6 +109,26 @@ func TestImageConcurrencyLimiter_MaxWaitingRequestsRejectsOverflow(t *testing.T)
 	<-waitingDone
 }
 
+func TestOpenAIGatewayHandlerWebSocketImageUsesExistingLimiter(t *testing.T) {
+	h := &OpenAIGatewayHandler{
+		cfg: &config.Config{Gateway: config.GatewayConfig{ImageConcurrency: config.ImageConcurrencyConfig{
+			Enabled:               true,
+			MaxConcurrentRequests: 1,
+			OverflowMode:          config.ImageConcurrencyOverflowModeReject,
+		}}},
+		imageLimiter: &imageConcurrencyLimiter{},
+	}
+	release, acquired := h.acquireImageGenerationSlotForWebSocket(context.Background())
+	if !acquired {
+		t.Fatal("first WebSocket image slot was not acquired")
+	}
+	if blockedRelease, blocked := h.acquireImageGenerationSlotForWebSocket(context.Background()); blocked {
+		blockedRelease()
+		t.Fatal("second WebSocket image slot was acquired above limit")
+	}
+	release()
+}
+
 func TestOpenAIGatewayHandlerAcquireImageGenerationSlot_Returns429WhenFull(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

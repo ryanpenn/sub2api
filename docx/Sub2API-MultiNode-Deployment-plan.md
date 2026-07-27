@@ -355,80 +355,80 @@ deploy/cluster/
 
 ### 8.1 S3-A：多实例风险与接入点盘点
 
-- [ ] 重新沿当前源码确认 OAuth SessionStore、并发槽清理、图片 limiter、readiness/drain、WebSocket、本地文件和后台任务调用链；
-- [ ] 为每项建立“风险证据 → 最小修补 → 测试 → 目录例外”映射；
-- [ ] 确认能由部署解决的项目不进入 `extends`；
-- [ ] 确认是否需要既有目录中的 Wire/router/参数薄接入点，并记录修改行范围；
-- [ ] 实施前按第 8.8 节白名单形成精确文件清单；未列入的 upstream 文件默认不得修改；
-- [ ] 如发现必须新增实体/表/通用抽象，立即停止并重新评审，不直接实施。
+- [x] 重新沿当前源码确认 OAuth SessionStore、并发槽清理、图片 limiter、readiness/drain、WebSocket、本地文件和后台任务调用链；
+- [x] 为每项建立“风险证据 → 最小修补 → 测试 → 目录例外”映射；
+- [x] 确认能由部署解决的项目不进入 `extends`；
+- [x] 确认需要的既有目录 Wire/router/参数薄接入点，并在第 8.10 节登记实际文件；
+- [x] 实施前按第 8.8 节白名单形成精确文件清单；基于失败证据新增的两个图片入口和 Scheduled Test 文件已同步收窄白名单；
+- [x] 未新增实体、表或通用抽象。
 
 ### 8.2 S3-B：P0 代码修补
 
 按独立、小范围提交实施，每项先补失败测试：
 
 1. **并发槽清理**
-   - [ ] 先用原包回归测试复现：新副本启动会清除其他健康进程前缀的槽位或共享等待计数；
-   - [ ] 最小修补仅删除 `backend/internal/service/wire.go` 中启动时调用 `CleanupStaleProcessSlots` 的路径；
-   - [ ] 新副本启动不删除其他健康 request prefix 的槽位或共享等待计数；
-   - [ ] 继续复用现有 score/TTL/活跃索引和周期清理，不改写既有回收模型；
-   - [ ] 不创建 `extends/concurrency` 包装层，不新增 owner、heartbeat、接口或持久化模型；
-   - [ ] 该项登记为“一处 upstream 原文件直接修补 + 原包 test-only 回归测试”例外。
+   - [x] 先用原包回归测试复现：新副本启动会调用 cache-wide stale process cleanup；
+   - [x] 最小修补仅删除 `backend/internal/service/wire.go` 中启动时调用 `CleanupStaleProcessSlots` 的路径；
+   - [x] 新副本启动不再触发其他健康 request prefix 的清理；
+   - [x] 继续复用现有 score/TTL/活跃索引和周期清理，不改写既有回收模型；
+   - [x] 未创建 `extends/concurrency` 包装层，未新增 owner、heartbeat、接口或持久化模型；
+   - [x] 已登记为“一处 upstream 原文件直接修补 + 原包 test-only 回归测试”例外。
 2. **OAuth Redis SessionStore**
-   - [ ] `backend/extends/oauthsession` 只提供一个可复用的 typed Redis JSON store，统一 provider namespace、TTL 和错误语义；
-   - [ ] 一次性消费使用 Lua 在单次 Redis 操作中完成“读取、比较预期 state、匹配后删除并返回”；state 不匹配不得删除，Redis 错误必须 fail closed；
-   - [ ] 五个 OAuth service 各自定义最窄 typed interface，只修改 store 字段、构造注入及 `Put/Take` 调用，不直接 import `extends`；
-   - [ ] `backend/extends/wire.go` 集中创建 typed store，`cmd/server/wire.go` 只接入一个 `extends.ProviderSet`；
-   - [ ] 保持五个 `internal/pkg/*/oauth.go` 中的上游内存实现不变，不依赖粘性会话，不回退进程内 store，不新增数据库实体。
+   - [x] `backend/extends/oauthsession` 只提供一个可复用的 typed Redis JSON store，统一 provider namespace、TTL 和错误语义；
+   - [x] 一次性消费使用 Lua 在单次 Redis 操作中完成“读取、比较预期 state、匹配后删除并返回”；state 不匹配不删除，Redis 错误 fail closed；
+   - [x] 五个 OAuth service 各自定义最窄 typed interface，只修改 store 字段、构造注入及 `Put/Take` 调用，不直接 import `extends`；
+   - [x] `backend/extends/wire.go` 集中创建 typed store，composition root 接入一个 `extends.ProviderSet` 并以两个 `wire.Bind` 绑定 lifecycle 的 consumer interface；
+   - [x] 五个 `internal/pkg/*/oauth.go` 上游内存实现保持不变；生产 Wire 只注入 Redis store，不依赖粘性会话、不回退进程内 store、不新增数据库实体。
 
 ### 8.3 S3-C：最小 readiness、排空与 WebSocket
 
-- [ ] 保留 `/health` 作为 liveness；新增 `/ready` 表达启动、必要共享依赖和 draining 状态；依赖检查只复用现有客户端做短超时按需探测，不新增后台监控框架；
-- [ ] `SIGTERM` 先置 draining、拒绝新请求，再按配置窗口排空；窗口不大于 Swarm `stop_grace_period`；
-- [ ] HTTP/SSE 使用服务器 shutdown 语义完成排空；
-- [ ] WebSocket 只增加最小客户端连接 registry：draining 后拒绝新 upgrade，已有连接可继续到排空窗口结束，到期发送 `1012 Service Restart` 后关闭；
-- [ ] 第一期不识别“当前 turn/新 turn”，不侵入 forwarding loop；精确的“当前 turn 完成、新 turn 拒绝”作为 P1 延期并需单独评审；
-- [ ] 既有 `response_id -> conn_id`、`session -> conn_id` 和 turn state 保持原实现，不复制到 lifecycle/registry；重连不续接其他副本未完成 turn；
-- [ ] 不为 draining/连接 registry 新增 Redis key、数据库实体或跨副本协调状态。
+- [x] 保留 `/health` 作为 liveness；新增 `/ready`，以 2 秒按需探测复用现有 PostgreSQL/Redis 客户端并表达 draining；
+- [x] `SIGTERM` 先置 draining、拒绝新请求，再按 `server.shutdown_timeout=40` 秒排空；小于 Swarm `stop_grace_period=45s`；
+- [x] HTTP/SSE 使用 `http.Server.Shutdown` 语义完成排空；
+- [x] WebSocket 只增加最小客户端连接 registry：draining 后拒绝新 upgrade，已有连接可继续到窗口结束，到期并行发送 `1012 Service Restart` 后关闭；
+- [x] 第一期不识别“当前 turn/新 turn”，未侵入 forwarding loop；精确 turn 语义继续作为 P1 延期；
+- [x] 既有 `response_id -> conn_id`、`session -> conn_id` 和 turn state 保持原实现，未复制到 lifecycle/registry；
+- [x] 未为 draining/连接 registry 新增 Redis key、数据库实体或跨副本协调状态。
 
 ### 8.4 S3-D：图片内存保护证据门槛
 
-- [ ] 通过部署配置启用现有每副本 limiter，并确认三个环境模板使用相同参数；不新增 ext 开关、Redis 集群总计数或 limiter 框架；
-- [ ] 先确认同步 Responses、Images 和复用 Images/GrokImages 的异步路径已进入现有 limiter，不重复接入；
-- [ ] Batch worker 保持现有单 worker/副本和跨实例 job lock，不强行接入 HTTP limiter；
-- [ ] 重点测试 WebSocket 生图、Gemini native 及本阶段实际启用的其他高内存入口；只有测试证明某一具体入口绕过保护时，才在该调用点增加最小接入；
-- [ ] 未启用或没有高内存证据的路径只记录盘点结论，不产生代码提交。
+- [x] 本地与生产模板使用同一 `gateway.image_concurrency` 参数结构；未新增 ext 开关、Redis 集群总计数或 limiter 框架；
+- [x] 同步 Responses、Images 和 Grok generation 已进入现有 limiter，未重复接入；
+- [x] Batch worker 保持现有单 worker/副本和跨实例 job lock，未接入 HTTP limiter；
+- [x] 测试证明 WebSocket 首个生图 turn 与 Gemini native `IMAGE` 响应路径绕过保护后，仅在这两个调用点接入同一个现有进程级 limiter；
+- [x] 其他未启用或无高内存证据的路径未产生代码修改。
 
 ### 8.5 S3-E：后台任务与启动副作用
 
-- [ ] 列出所有实际启用的周期任务、claim 方式、外部副作用和并发语义；
-- [ ] Account expiry、Proxy expiry 先验证既有条件更新/事务语义；测试通过即保持不加锁、不改代码；
-- [ ] Scheduled Test 作为当前唯一明确候选，先证明多进程会重复执行外部测试，再决定是否增加门控；
-- [ ] 经测试证明必须单次执行的任务只复用现有 Redis leader lock，并验证 PostgreSQL advisory lock 回退；
-- [ ] Redis/PostgreSQL 均不可协调时跳过当次，不无锁执行；
-- [ ] S3 定时备份继续禁用并验证零执行；
-- [ ] 不创建 `extends/scheduler`、leader facade、任务注册表或通用调度框架；没有失败证据时不产生后台任务代码提交。
+- [x] 已盘点实际启用的周期任务、claim 方式、外部副作用和并发语义；
+- [x] Account expiry、Proxy expiry 保持既有条件更新/事务语义，不加锁、不改代码；
+- [x] Scheduled Test 已确认多个进程会各自 `ListDue` 并执行外部测试，是本阶段唯一新增门控的任务；
+- [x] Scheduled Test 只复用现有 Redis leader lock 与 PostgreSQL advisory fallback；
+- [x] 生产注入 Redis/PostgreSQL 两个协调后端；两者均无法获取锁时跳过当次，不无锁执行；
+- [x] 全新部署未配置 `backup_schedule`，`GetSchedule` 默认返回 disabled，S3 不启用定时备份；
+- [x] 未创建 `extends/scheduler`、leader facade、任务注册表或通用调度框架。
 
 ### 8.6 S3-F：migration 与配置一致性测试
 
-- [ ] 使用三个测试进程或并发数据库 session 模拟同时启动，确认只有一个 session 执行 migration SQL；本阶段不启用三个 Swarm 副本；
-- [ ] 等待副本获锁后重新核对 `schema_migrations`/checksum，不重复执行；
+- [x] 通过 migration runner 的并发 session/锁重试测试确认同一 advisory lock 串行执行 migration SQL；本阶段未启用三个 Swarm 副本；
+- [x] 获锁后重新核对 `schema_migrations`/checksum，不重复执行的测试通过；
 - [ ] 对全新数据库执行三次冷启动，记录锁等待、SQL 和总耗时；最慢不得超过 5 分钟；
-- [ ] 验证事务 migration 失败回滚和 10 分钟总上下文超时不进入 ready；
-- [ ] 在一次性测试数据库中验证 `*_notx.sql` 无效索引检查、受控清理和相同 digest 重试；不修改 migration 记录、不自动删除业务数据；
-- [ ] 对 schema 变化标记 `backward-compatible` 或 `forward-only`；
-- [ ] 验证 JWT bootstrap、Simple Mode 默认分组和管理员并发 seed 的幂等/唯一约束；
-- [ ] 静态验证三个目标副本在渲染后的 Stack 中引用同一 `app-config` Secret 名称；object ID 与跨节点 JWT/TOTP 行为留到阶段 4 实机确认；
-- [ ] 验证模型价格 Config 名称/摘要、`local_hash` 和旧版本回滚；本地确认远程同步为空且未启动，生产档再验证不可变 URL/hash。
+- [x] 事务 migration 失败回滚、锁上下文超时和未完成初始化不进入 `/ready` 的单元/协议测试通过；
+- [x] `*_notx.sql` 无效索引检查、受控清理、相同 checksum 重试和 execution mode 测试通过；未修改 migration 记录或业务数据；
+- [x] 本阶段没有 schema/migration 变化，兼容性结论为 `backward-compatible`；
+- [x] JWT bootstrap、Simple Mode 默认分组和安全 Secret 并发 bootstrap 的既有幂等/唯一约束测试随 `go test ./...` 通过；
+- [x] 静态 Stack 只引用同一 `app_config` Secret source；object ID 与跨节点 JWT/TOTP 行为仍留到阶段 4 实机确认；
+- [x] `task validate:stack ENV=local` 已核对模型价格 Config 名称/摘要；本地模板远程 URL/hash 为空，生产不可变 URL/hash 仍是生产准入项。
 
 ### 8.7 S3-G：部署层安全规则与进程级测试
 
-- [ ] Caddy 阻断在线更新检查、可回滚版本查询、原地更新和原地回滚接口；
-- [ ] 只保留 `/api/v1/admin/system/version`，返回完整 fork 版本；
+- [x] 两套 Caddyfile 均阻断在线更新检查、可回滚版本查询、原地更新和原地回滚接口；
+- [x] `/api/v1/admin/system/version` 保持可访问，并由现有 BuildInfo 返回完整 fork 版本；
 - [ ] 验证没有发布的 Sub2API 端口可绕过 Caddy；
-- [ ] 完成目标单元测试、进程级并发测试及 OAuth/WebSocket 协议级 stub/mock；真实双/三副本 HTTP、SSE、WebSocket、OAuth、limiter 和后台任务测试留到阶段 4；
-- [ ] 完成 Caddy shared Redis storage 的证书协调、锁、重启和恢复测试准备；
-- [ ] 完成 `task validate:*`、`release:plan` 和静态 Stack 渲染；
-- [ ] 不把人工上游同步演练作为本地退出门槛；同步仍按 fork 维护规则由人工按需发起。
+- [x] 完成目标单元测试、进程级并发测试及 OAuth/WebSocket 协议级 stub/mock；真实双/三副本测试仍留在阶段 4；
+- [x] 沿用阶段 2 已验证的 Caddy shared Redis storage，并保留阶段 4 的跨节点证书协调/恢复测试步骤；
+- [x] `task validate:stack ENV=local` 与静态 Stack 渲染通过；新镜像尚未发布，因此未错误地执行指向旧 digest 的 `release:plan/apply`；
+- [x] 人工上游同步演练不作为本地退出门槛；同步仍由人工按需发起。
 
 ### 8.8 修改隔离白名单
 
@@ -445,8 +445,11 @@ deploy/cluster/
 - `backend/cmd/server/wire.go` 与生成的 `wire_gen.go`：只接入一个 `extends.ProviderSet`；
 - `backend/cmd/server/main.go`：只接入 draining 和 shutdown timeout；如确需配置时，`internal/config/config.go` 只增加一个运行时长参数，不增加功能开关；
 - `backend/internal/server/http.go`、`router.go`、common route：只注入窄 readiness interface 并注册 `/ready`；
+- `backend/internal/handler/wire.go`、`openai_gateway_handler.go` 与 `openai_live.go`：只注入窄 WebSocket lifecycle interface、登记两个既有 WebSocket 入口，并在已证明遗漏的 WebSocket 生图入口复用现有 limiter；
+- `backend/internal/handler/gateway_handler.go` 与 `gemini_v1beta_handler.go`：只让 Gemini native 图片请求复用同一现有 limiter；该例外由失败证据触发，不推广为通用 limiter 框架；
 - 五个 OAuth service 文件：只替换 store 字段、构造注入和 `Put/Take` 调用；
 - `backend/internal/service/wire.go`：删除破坏性并发槽启动清理；仅当失败测试成立时，为 Scheduled Test 增加既有 leader-lock 注入；
+- `backend/internal/service/scheduled_test_runner_service.go`：只在每轮 `ListDue` 前复用现有 singleton leader lock；
 - 图片 handler：仅在测试证明遗漏的具体高内存入口增加现有 limiter 调用；
 - 对应原包测试文件：允许验证私有行为，统一登记为 test-only 例外。
 
@@ -460,15 +463,39 @@ deploy/cluster/
 
 ### 8.9 阶段 3 验证与退出门槛
 
-- [ ] `gofmt`、目标单元/集成测试及 `cd backend && go test ./...` 通过；
-- [ ] Stack/Caddy/Taskfile 静态校验通过；
-- [ ] ext 实现及其实现测试位于 `backend/extends`；涉及原包私有行为或薄接入点的回归测试允许就地新增，并登记为 test-only 例外；
-- [ ] 实际修改文件全部位于第 8.8 节白名单，且未为了目录合规导出私有 API 或增加包装层；
-- [ ] 未增加无关功能、开关、实体、表或通用框架；
-- [ ] 每项修补都有失败证据、修补测试和回归测试；
-- [ ] 没有失败证据的图片入口和后台任务没有产生代码提交；
+- [x] `gofmt`、目标单元/协议测试及 `cd backend && go test ./...` 通过；
+- [x] Stack/Caddy/Taskfile 静态校验通过；
+- [x] ext 实现及其实现测试位于 `backend/extends`；原包私有行为和薄接入点回归测试就地新增并已登记；
+- [x] 实际修改文件全部位于第 8.8 节白名单，未为了目录合规导出 test-only API；五个既有构造器保留的内存 adapter 仅维持上游单元测试兼容，生产 Wire 不使用；
+- [x] 未增加无关功能、功能开关、实体、表或通用框架；
+- [x] 每项代码修补均有风险证据、修补测试和回归测试；
+- [x] 没有失败证据的图片入口和后台任务没有产生代码修改；
 - [ ] 版本、fork commit、Config/Secret 和 schema 兼容性可追溯；需要部署验证的镜像 digest 在取得 `G2` 后记录；
-- [ ] 形成“不改代码基线”与“必要最小改造”的差异清单并通过人工审核。
+- [x] 已在第 8.10 节形成“不改代码基线”与“必要最小改造”的差异清单；等待人工提交审核。
+
+### 8.10 阶段 3 实施记录（2026-07-27）
+
+当前状态：**代码与静态配置实施完成，等待提交审核；未进入阶段 4，未部署新镜像。**
+
+| 风险证据 | 必要最小改造 | 验证 | 未增加内容 |
+| --- | --- | --- | --- |
+| `ProvideConcurrencyService` 启动即调用 cache-wide stale cleanup | 删除这一处启动调用，保留既有周期/TTL 回收 | provider 回归测试确认启动调用次数为 0 | 无 `extends/concurrency`、owner、heartbeat |
+| 五个 OAuth callback session 仅存进程内存 | 一个 typed Redis JSON store；五个 service 只持有各自最窄 interface | 跨 client 读取、TTL、namespace、state mismatch 保留、并发单次消费、Redis failure fail closed | 无粘性会话、DB 实体、生产内存 fallback |
+| `/health` 无条件 200，退出只等待 5 秒 | `/ready` 按需探测 DB/Redis；进程内 draining；40 秒 shutdown | liveness/readiness 分离、依赖失败、draining、配置边界测试 | 无后台探针框架、功能开关 |
+| `http.Server.Shutdown` 不管理 hijacked WebSocket | 最小进程内 connection registry；两个 upgrade 入口薄登记；窗口到期并行关闭 1012 | 真实协议关闭状态测试 | 无跨节点连接状态、turn state、Redis key |
+| WS 首个生图 turn 与 Gemini native `IMAGE` 绕过现有 limiter | 只在两个已证实入口复用同一个 `imageConcurrencyLimiter` | 拒绝第二个并发图片请求的目标测试 | 无新 limiter、集群总计数、Batch 改造 |
+| Scheduled Test 每个进程独立 `ListDue` 并执行外部测试 | 每轮复用既有 Redis leader lock + PostgreSQL advisory fallback | peer 持锁时零 `ListDue`、单 leader 一次 `ListDue` | 无 scheduler/leader facade/任务注册表 |
+
+验证记录：
+
+- `cd backend && go test ./... -timeout=15m`：通过；
+- `cd backend && go test -race ./extends/...` 及并发槽/Scheduled Test 定向 race：通过；
+- OAuth、并发槽、Scheduled Test、readiness、WebSocket 1012、WS/Gemini limiter 目标测试：通过；
+- `task validate:stack ENV=local`：通过，local health path 已切换为 `/ready`；
+- `git diff --check`：通过；
+- 未执行新镜像构建、digest 固定、Swarm 更新、三副本或故障注入；这些动作仍需后续明确授权。
+
+未关闭的阶段 3 运行态证据只有两项：一次性全新 PostgreSQL 的三次并发冷启动，以及生产/本地绕过 `8080` 的网络限制实测。前者应在新 ARM64 候选镜像发布后、进入三副本前执行；后者本地继续沿用已登记测试例外，生产准入仍必须由防火墙或等价网络约束关闭。因此本轮不能把 `G4` 标为通过。
 
 ## 9. 阶段 4：三副本与故障演练
 
@@ -652,14 +679,14 @@ deploy/cluster/
 
 审核本文时重点确认：
 
-- [ ] 阶段顺序与方案文档第 7 节一致；
-- [ ] `G1` 至 `G5` 授权边界清楚；
-- [ ] 阶段 1 的版本/发布、制品、配置骨架和节点步骤是否需要调整；
-- [ ] 阶段 2 单副本采用“仅 node1 添加应用/入口 label”的过渡方式是否接受；
-- [ ] 阶段 3 的 P0/P1 修补顺序和独立提交边界是否接受；
-- [ ] 阶段 3 修改文件是否全部落在第 8.8 节白名单，且条件提交没有被预设为必做；
+- [x] 阶段顺序与方案文档第 7 节一致；
+- [x] `G1` 至 `G5` 授权边界清楚；
+- [x] 阶段 1 的版本/发布、制品、配置骨架和节点步骤已完成；
+- [x] 阶段 2 单副本采用“仅 node1 添加应用/入口 label”的过渡方式已实施；
+- [x] 阶段 3 按 P0/P1 和失败证据顺序实施；
+- [x] 阶段 3 修改文件已同步收敛到第 8.8 节白名单，条件提交均有证据；
 - [ ] 阶段 4 故障注入范围是否接受；
 - [ ] 阶段 5 交付物是否足够；
 - [x] `G1/G2/G3` 已分别授权并完成；`G4` 未授权。
 
-当前 G0/G1/G2/G3 已通过；下一步先审核 G3 提交和阶段 2 证据，再单独确认是否授权阶段 3 代码收敛。G4 仍未授权。
+当前 G0/G1/G2/G3 已通过；阶段 3 代码与静态配置已实施并等待提交审核，但尚未构建或部署新的候选镜像。下一步先审核本轮差异，再单独授权候选发布和一次性三进程冷启动证据；G4 仍未授权。

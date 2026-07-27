@@ -186,6 +186,10 @@ func (h *OpenAIGatewayHandler) writeLiveCreateError(c *gin.Context, err error) {
 }
 
 func (h *OpenAIGatewayHandler) LiveSideband(c *gin.Context) {
+	if h.webSocketLifecycle != nil && h.webSocketLifecycle.IsDraining() {
+		h.errorResponse(c, http.StatusServiceUnavailable, "service_unavailable", "Service is restarting")
+		return
+	}
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
@@ -219,6 +223,14 @@ func (h *OpenAIGatewayHandler) LiveSideband(c *gin.Context) {
 	})
 	if err != nil {
 		return
+	}
+	if h.webSocketLifecycle != nil {
+		if !h.webSocketLifecycle.RegisterWebSocket(downstream) {
+			_ = downstream.Close(coderws.StatusServiceRestart, "service restart")
+			_ = downstream.CloseNow()
+			return
+		}
+		defer h.webSocketLifecycle.UnregisterWebSocket(downstream)
 	}
 	defer func() { _ = downstream.CloseNow() }()
 	if err := h.gatewayService.ProxyLiveSideband(c.Request.Context(), record, downstream); err != nil {

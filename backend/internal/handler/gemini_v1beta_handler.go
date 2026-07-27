@@ -11,7 +11,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/gemini"
@@ -196,6 +198,16 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, authSubject, service.ContentModerationProtocolGemini, modelName, body); decision != nil && !decision.AllowNextStage {
 		googleSecurityAuditError(c, decision)
 		return
+	}
+	if isGeminiNativeImageGeneration(modelName, body) {
+		release, acquired := h.acquireGeminiImageGenerationSlot(c.Request.Context())
+		if !acquired {
+			googleError(c, http.StatusTooManyRequests, "Image generation concurrency limit exceeded, please retry later")
+			return
+		}
+		if release != nil {
+			defer release()
+		}
 	}
 
 	// 解析渠道级模型映射
@@ -569,6 +581,46 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		)
 		return
 	}
+}
+
+func isGeminiNativeImageGeneration(model string, body []byte) bool {
+	if strings.Contains(strings.ToLower(strings.TrimSpace(model)), "image") {
+		return true
+	}
+	var request struct {
+		GenerationConfig struct {
+			ResponseModalities []string        `json:"responseModalities"`
+			ImageConfig        json.RawMessage `json:"imageConfig"`
+		} `json:"generationConfig"`
+	}
+	if json.Unmarshal(body, &request) != nil {
+		return false
+	}
+	if len(request.GenerationConfig.ImageConfig) > 0 && string(request.GenerationConfig.ImageConfig) != "null" {
+		return true
+	}
+	for _, modality := range request.GenerationConfig.ResponseModalities {
+		if strings.EqualFold(strings.TrimSpace(modality), "IMAGE") {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *GatewayHandler) acquireGeminiImageGenerationSlot(ctx context.Context) (func(), bool) {
+	if h == nil || h.cfg == nil || h.imageLimiter == nil {
+		return nil, true
+	}
+	imageConcurrency := h.cfg.Gateway.ImageConcurrency
+	wait := strings.TrimSpace(imageConcurrency.OverflowMode) == config.ImageConcurrencyOverflowModeWait
+	return h.imageLimiter.Acquire(
+		ctx,
+		imageConcurrency.Enabled,
+		imageConcurrency.MaxConcurrentRequests,
+		wait,
+		time.Duration(imageConcurrency.WaitTimeoutSeconds)*time.Second,
+		imageConcurrency.MaxWaitingRequests,
+	)
 }
 
 func parseGeminiModelAction(rest string) (model string, action string, err error) {

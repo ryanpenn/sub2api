@@ -39,8 +39,15 @@ type OpenAIGatewayHandler struct {
 	opsService                 *service.OpsService
 	concurrencyHelper          *ConcurrencyHelper
 	imageLimiter               *imageConcurrencyLimiter
+	webSocketLifecycle         WebSocketLifecycle
 	maxAccountSwitches         int
 	cfg                        *config.Config
+}
+
+type WebSocketLifecycle interface {
+	IsDraining() bool
+	RegisterWebSocket(*coderws.Conn) bool
+	UnregisterWebSocket(*coderws.Conn)
 }
 
 type grokMediaEligibilityProber interface {
@@ -1392,6 +1399,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		h.errorResponse(c, http.StatusUpgradeRequired, "invalid_request_error", "WebSocket upgrade required (Upgrade: websocket)")
 		return
 	}
+	if h.webSocketLifecycle != nil && h.webSocketLifecycle.IsDraining() {
+		h.errorResponse(c, http.StatusServiceUnavailable, "service_unavailable", "Service is restarting")
+		return
+	}
 	setOpenAIClientTransportWS(c)
 
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
@@ -1456,6 +1467,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			zap.Bool("has_sec_websocket_key", strings.TrimSpace(c.GetHeader("Sec-WebSocket-Key")) != ""),
 		)
 		return
+	}
+	if h.webSocketLifecycle != nil {
+		if !h.webSocketLifecycle.RegisterWebSocket(wsConn) {
+			_ = wsConn.Close(coderws.StatusServiceRestart, "service restart")
+			_ = wsConn.CloseNow()
+			return
+		}
+		defer h.webSocketLifecycle.UnregisterWebSocket(wsConn)
 	}
 	defer func() {
 		_ = wsConn.CloseNow()
@@ -1536,6 +1555,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
+	}
+	if imageIntent {
+		imageRelease, acquired := h.acquireImageGenerationSlotForWebSocket(ctx)
+		if !acquired {
+			closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "image generation concurrency limit exceeded")
+			return
+		}
+		if imageRelease != nil {
+			defer imageRelease()
+		}
 	}
 
 	// F5a: 握手层会话屏蔽检查。WS 握手无 body，显式标识仅来自握手 header
@@ -2155,6 +2184,22 @@ func (h *OpenAIGatewayHandler) acquireImageGenerationSlot(c *gin.Context, stream
 	}
 	h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Image generation concurrency limit exceeded, please retry later", streamStarted)
 	return nil, false
+}
+
+func (h *OpenAIGatewayHandler) acquireImageGenerationSlotForWebSocket(ctx context.Context) (func(), bool) {
+	if h == nil || h.cfg == nil || h.imageLimiter == nil {
+		return nil, true
+	}
+	imageConcurrency := h.cfg.Gateway.ImageConcurrency
+	wait := strings.TrimSpace(imageConcurrency.OverflowMode) == config.ImageConcurrencyOverflowModeWait
+	return h.imageLimiter.Acquire(
+		ctx,
+		imageConcurrency.Enabled,
+		imageConcurrency.MaxConcurrentRequests,
+		wait,
+		time.Duration(imageConcurrency.WaitTimeoutSeconds)*time.Second,
+		imageConcurrency.MaxWaitingRequests,
+	)
 }
 
 // handleConcurrencyError handles concurrency-related acquire errors.

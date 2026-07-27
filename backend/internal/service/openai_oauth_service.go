@@ -14,16 +14,47 @@ import (
 
 // OpenAIOAuthService handles OpenAI OAuth authentication flows
 type OpenAIOAuthService struct {
-	sessionStore         *openai.SessionStore
+	sessionStore         OpenAIOAuthSessionStore
 	proxyRepo            ProxyRepository
 	oauthClient          OpenAIOAuthClient
 	privacyClientFactory PrivacyClientFactory // 用于调用 chatgpt.com/backend-api（ImpersonateChrome）
 }
 
+type OpenAIOAuthSessionStore interface {
+	Put(context.Context, string, *openai.OAuthSession) error
+	Take(context.Context, string, string) (*openai.OAuthSession, bool, bool, error)
+	Stop()
+}
+
+type openAIMemoryOAuthSessionStore struct{ store *openai.SessionStore }
+
+func (s openAIMemoryOAuthSessionStore) Put(_ context.Context, id string, session *openai.OAuthSession) error {
+	s.store.Set(id, session)
+	return nil
+}
+
+func (s openAIMemoryOAuthSessionStore) Take(_ context.Context, id, expectedState string) (*openai.OAuthSession, bool, bool, error) {
+	session, ok := s.store.Get(id)
+	if !ok {
+		return nil, false, false, nil
+	}
+	matched := subtle.ConstantTimeCompare([]byte(expectedState), []byte(session.State)) == 1
+	if matched {
+		s.store.Delete(id)
+	}
+	return session, true, matched, nil
+}
+
+func (s openAIMemoryOAuthSessionStore) Stop() { s.store.Stop() }
+
 // NewOpenAIOAuthService creates a new OpenAI OAuth service
 func NewOpenAIOAuthService(proxyRepo ProxyRepository, oauthClient OpenAIOAuthClient) *OpenAIOAuthService {
+	return NewOpenAIOAuthServiceWithSessionStore(proxyRepo, oauthClient, openAIMemoryOAuthSessionStore{store: openai.NewSessionStore()})
+}
+
+func NewOpenAIOAuthServiceWithSessionStore(proxyRepo ProxyRepository, oauthClient OpenAIOAuthClient, sessionStore OpenAIOAuthSessionStore) *OpenAIOAuthService {
 	return &OpenAIOAuthService{
-		sessionStore: openai.NewSessionStore(),
+		sessionStore: sessionStore,
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
 	}
@@ -90,7 +121,9 @@ func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 		ProxyURL:     proxyURL,
 		CreatedAt:    time.Now(),
 	}
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Put(ctx, sessionID, session); err != nil {
+		return nil, infraerrors.Newf(http.StatusServiceUnavailable, "OPENAI_OAUTH_SESSION_STORE_FAILED", "failed to store oauth session: %v", err)
+	}
 
 	// Build authorization URL
 	authURL := openai.BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, normalizedPlatform)
@@ -131,15 +164,18 @@ type OpenAITokenInfo struct {
 
 // ExchangeCode exchanges authorization code for tokens
 func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExchangeCodeInput) (*OpenAITokenInfo, error) {
-	// Get session
-	session, ok := s.sessionStore.Get(input.SessionID)
-	if !ok {
-		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_SESSION_NOT_FOUND", "session not found or expired")
-	}
 	if input.State == "" {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_STATE_REQUIRED", "oauth state is required")
 	}
-	if subtle.ConstantTimeCompare([]byte(input.State), []byte(session.State)) != 1 {
+	// Read, validate state and consume in one Redis operation.
+	session, ok, stateMatch, err := s.sessionStore.Take(ctx, input.SessionID, input.State)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusServiceUnavailable, "OPENAI_OAUTH_SESSION_STORE_FAILED", "failed to consume oauth session: %v", err)
+	}
+	if !ok {
+		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_SESSION_NOT_FOUND", "session not found or expired")
+	}
+	if !stateMatch {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_STATE", "invalid oauth state")
 	}
 
@@ -181,9 +217,6 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 			userInfo = claims.GetUserInfo()
 		}
 	}
-
-	// Delete session after successful exchange
-	s.sessionStore.Delete(input.SessionID)
 
 	tokenInfo := &OpenAITokenInfo{
 		AccessToken:  tokenResp.AccessToken,
