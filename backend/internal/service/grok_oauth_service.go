@@ -153,6 +153,17 @@ func (s *GrokOAuthService) ExchangeCode(ctx context.Context, input *GrokExchange
 		state = strings.TrimSpace(parsed.State)
 	}
 	if parsed.RequiresState && state == "" {
+		// Preserve the one-time callback session semantics: malformed callback
+		// URLs consume an existing session even though token exchange is rejected.
+		// Passing an empty expected state makes both the memory and Redis stores
+		// atomically take the session without weakening mismatch retry behavior.
+		_, ok, _, err := s.sessionStore.Take(ctx, input.SessionID, "")
+		if err != nil {
+			return nil, infraerrors.Newf(http.StatusServiceUnavailable, "GROK_OAUTH_SESSION_STORE_FAILED", "failed to consume oauth session: %v", err)
+		}
+		if !ok {
+			return nil, infraerrors.New(http.StatusBadRequest, "GROK_OAUTH_SESSION_NOT_FOUND", "session not found or expired")
+		}
 		return nil, infraerrors.New(http.StatusBadRequest, "GROK_OAUTH_STATE_REQUIRED", "oauth state is required for callback URLs")
 	}
 	session, ok, stateMatch, err := s.sessionStore.Take(ctx, input.SessionID, state)
