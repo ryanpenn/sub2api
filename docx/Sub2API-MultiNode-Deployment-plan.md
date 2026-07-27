@@ -1,6 +1,6 @@
 # Sub2API 多节点部署实施计划
 
-> 状态：`G0/G1/G2/G3` 已通过；`G4-A`、`S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D` 与 `G4-B2b-1` Redis 中断恢复已完成；`G4-B2b-2a` PostgreSQL 暂停/恢复已执行但 readiness 门槛未通过，其最小代码修补、`ext.3` 版本提升与本地 ARM64 候选构建已完成，节点分发、部署和现场复测尚未授权；数据节点及资源/迁移故障仍未授权
+> 状态：`G0/G1/G2/G3` 已通过；`G4-A`、`S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D`、`G4-B2b-1` Redis 中断恢复及 `G4-B2b-2a` PostgreSQL 容器暂停/恢复均已通过；`ext.3` 已分发并滚动部署到三个节点，数据节点及资源/迁移故障仍未授权
 > 创建日期：2026-07-26
 > 适用范围：三个 Multipass ARM64 节点的本地 Docker Swarm 验证，以及 AMD64 生产制品与配置基线
 > 方案来源：[`Sub2API-MultiNode-Deployment.md`](./Sub2API-MultiNode-Deployment.md)
@@ -11,10 +11,10 @@
 
 本文把已经完成的多节点部署方案拆解为可执行、可验证、可停止和可回滚的实施步骤。阶段编号严格沿用方案文档第 7 节：阶段 0 至阶段 5。
 
-当前已完成 `G1` 仓库侧实施、`G2` 首版制品发布、`G3` 本地单副本基线、阶段 3 多实例前置收敛、`G4-A` 三副本启用、`S4-B` 非破坏性专项、`G4-B1/S4-C` 受控滚动/暂停/回滚、`G4-B2a/S4-D` 单 task、单节点和 Caddy 重启恢复，以及 `G4-B2b-1` Redis 中断恢复验证。`G4-B2b-2a` PostgreSQL 暂停/恢复已安全执行，但直连 `/ready` 未在 4 秒内返回 503，当前门槛未通过；获授权的 `G4-B2b-2a-fix` 已在 `backend/extends/lifecycle` 内完成最小代码修补和测试，随后 `G4-B2b-2a-candidate` 已提升到 `ext.3` 并在本机完成 ARM64 候选构建与身份核验，但未分发、部署或重复故障注入。后续仍不执行下列操作：
+当前已完成 `G1` 仓库侧实施、`G2` 首版制品发布、`G3` 本地单副本基线、阶段 3 多实例前置收敛、`G4-A` 三副本启用、`S4-B` 非破坏性专项、`G4-B1/S4-C` 受控滚动/暂停/回滚、`G4-B2a/S4-D` 单 task、单节点和 Caddy 重启恢复，以及 `G4-B2b-1` Redis 中断恢复验证。原 `G4-B2b-2a` PostgreSQL 暂停场景在 `ext.2` 下暴露 readiness 超时，随后已按独立授权完成 `backend/extends/lifecycle` 两文件最小修补、`ext.3` 本地 ARM64 候选、三节点归档分发、活动清单切换、受控滚动及同场景复测；复测期间三个 `/health` 保持 200，九次直连 `/ready` 均在约 2.00–2.07 秒内返回 503，恢复后环境一致性与 `release:verify` 均通过。后续仍不执行下列操作：
 
 - 不继续扩大阶段 3 运行时代码范围；新增修补仍须先有失败证据并重新审核白名单；
-- 在候选身份审核与部署复测获得独立授权前，不修改活动 `cluster.env`、不把候选分发到节点、不执行 `release:apply`、不重复 PostgreSQL 故障注入；不执行 `G4-B2b-2b/S4-D` 的数据节点中断，不执行 `G4-B2c/S4-D` 的 OOM 或受控 migration 失败；不把已完成的 Redis 暂停/恢复外推为 Redis 进程重启、持久化恢复、Redis 故障时重启 Caddy 或证书续期验证；
+- 不执行 `G4-B2b-2b/S4-D` 的数据节点中断，不执行 `G4-B2c/S4-D` 的 OOM 或受控 migration 失败；不把已通过的 Redis/PostgreSQL 容器暂停/恢复外推为进程重启、持久化/volume 恢复、数据节点停止、备份恢复、Redis 故障时重启 Caddy 或证书续期验证；
 - 不执行生产部署、真实数据迁移或切流；
 - 不配置 DNSPod，不处理 DNS 故障节点摘除；
 - 不重复触发已完成的发布 workflow，不覆盖任何 release tag 或镜像 tag。
@@ -46,14 +46,14 @@
 | upstream 基线 commit | `2730c1c43b29be003925b033f3f9e645e726bb8c` |
 | upstream VERSION | `backend/cmd/server/VERSION = 0.1.165` |
 | fork VERSION | `backend/extends/VERSION = ext.3`；独立递增，不随 upstream 重置 |
-| 组合版本 | 仓库候选为 `0.1.165-ext.3`，版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`，尚未创建 tag；活动集群仍为已发布的 `v0.1.165-ext.2` |
+| 组合版本 | 仓库与活动本地集群均为 `0.1.165-ext.3`，版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`，尚未创建 tag 或上传 GHCR |
 | `backend/extends` | 已完成 Redis OAuth SessionStore、最小 lifecycle manager，以及 PostgreSQL readiness 单 in-flight probe 与 caller 硬超时修补；没有新增实体、功能开关或通用扩展框架 |
-| `deploy/cluster` | 已创建通用 Stack、两套环境档、Caddyfile 和 GoTask 契约；活动 `local-arm64/cluster.env` 仍固定 `v0.1.165-ext.2`，`ext.3` 候选身份只登记在文档，部署授权前不改活动清单 |
+| `deploy/cluster` | 已创建通用 Stack、两套环境档、Caddyfile 和 GoTask 契约；活动 `local-arm64/cluster.env` 已在提交 `3608d6c7b` 固定 `v0.1.165-ext.3` 的 source image ID、归档 SHA-256 与三节点 node image ID |
 | release workflow | 唯一入口为 GHCR-only `workflow_dispatch`；只读组合双 VERSION并校验已有 tag，任何 digest push 前要求已有 package 为 private 或确认尚不存在，push 后再次确认 private 才提升三个不可变 tag；不创建 GitHub Release、不发布 Docker Hub、不发送通知 |
 | GoReleaser | 两份兼容配置只保留本地制品构建及完整 fork `main.Version`、`Commit/Date/BuildType` 注入，不包含 `dockers`、`docker_manifests` 或其他 registry publisher；集群发布不调用 GoReleaser |
 | G1 工具版本 | Go `1.26.5`、Docker Client `29.6.1`、GoTask `3.50.0`、GoReleaser `2.17.0`、actionlint `1.7.7` |
 | 本地节点 | `node1`、`node2`、`node3`，均为 Ubuntu ARM64、2 vCPU、4G 内存、20G 磁盘 |
-| Swarm/业务 service | 2026-07-27 已完成三 manager Swarm、共享数据 service、一次性 bootstrap 和三节点应用/入口扩容；Sub2API/Caddy 均为 `3/3`，PostgreSQL/Redis 均为 `1/1` |
+| Swarm/业务 service | 2026-07-27 已完成三 manager Swarm、共享数据 service、一次性 bootstrap 和三节点应用/入口扩容；Sub2API `ext.3`/Caddy 均为 `3/3`，PostgreSQL/Redis 均为 `1/1` |
 
 若正式实施时 upstream VERSION、历史 ext 序号、节点状态或依赖版本已变化，先更新版本矩阵和实施输入，再继续；不得机械使用本快照。
 
@@ -81,14 +81,15 @@ flowchart LR
 | `G4-B1` 滚动与回滚授权 | 允许在本地测试环境执行 `S4-C` 受控滚动、失败暂停、旧清单回滚和模型价格 Config 回滚 | 已完成 |
 | `G4-B2a` 低风险故障授权 | 允许在本地测试环境停止单个 Sub2API task、停止并恢复 node3、重启单个 Caddy task，并验证共享 TLS storage 读取 | 已完成 |
 | `G4-B2b-1` Redis 依赖故障授权 | 允许在本地测试环境暂停并恢复同一 Redis 容器；不同时重启 Caddy、不停止数据节点 | 已完成 |
-| `G4-B2b-2a` PostgreSQL 依赖故障授权 | 允许暂停并恢复同一 PostgreSQL 容器；不停止 node1、不修改 volume | 已执行，readiness 门槛未通过 |
+| `G4-B2b-2a` PostgreSQL 依赖故障授权 | 允许暂停并恢复同一 PostgreSQL 容器；不停止 node1、不修改 volume | 原 `ext.2` 执行未通过，`ext.3` 同场景复测已通过 |
 | `G4-B2b-2a-fix` PostgreSQL readiness 最小修补授权 | 仅允许修改 `backend/extends/lifecycle/manager.go` 与 `manager_test.go`，实现单 in-flight probe、caller 硬超时并完成测试；不提升版本、不构建、不部署、不重复故障注入 | 已完成 |
 | `G4-B2b-2a-candidate` 本地候选授权 | 审核修补提交；允许将 `backend/extends/VERSION` 提升到 `ext.3`，在本机构建并核验 ARM64 镜像；不创建 tag、不上传、不分发节点、不改活动清单、不部署 | 已完成 |
+| `G4-B2b-2a-deploy-retest` 候选部署复测授权 | 允许分发已核验归档、切换本地活动清单、受控滚动三个副本并重复同一 PostgreSQL 容器暂停/恢复场景；失败时回滚 `ext.2`；不创建 tag、不上传、不执行其他故障 | 已完成并通过 |
 | `G4-B2b-2b` 数据节点故障授权 | 允许停止并恢复承载数据服务的 manager 节点 | 未授权 |
 | `G4-B2c` 资源与迁移故障授权 | 允许制造单副本 OOM 或受控 migration 失败 | 未授权 |
 | `G5` 交付确认 | 确认本地验收结论并关闭实施计划 | 未授权 |
 
-任何授权都只覆盖表中动作。`G1` 不隐含 `G2/G3`，`G4-A/G4-B1/G4-B2a/G4-B2b-1/G4-B2b-2a` 不隐含源码修补、`G4-B2b-2b/G4-B2c` 或生产授权；`G4-B2b-2a-fix` 不隐含候选发布，`G4-B2b-2a-candidate` 也不隐含 tag、上传、节点分发、活动清单变更、部署或现场复测。已执行不等于已通过，仓库测试或本机构建通过也不等于故障门槛已通过。
+任何授权都只覆盖表中动作。`G1` 不隐含 `G2/G3`，`G4-A/G4-B1/G4-B2a/G4-B2b-1/G4-B2b-2a` 不隐含源码修补、`G4-B2b-2b/G4-B2c` 或生产授权；`G4-B2b-2a-fix` 不隐含候选发布，`G4-B2b-2a-candidate` 不隐含 tag、上传或部署，`G4-B2b-2a-deploy-retest` 也不隐含 Git tag、GHCR 上传或其他故障注入。已执行不等于已通过，仓库测试或本机构建通过也不等于故障门槛已通过。
 
 ### 4.2 总体阶段状态
 
@@ -98,7 +99,7 @@ flowchart LR
 | 1. 节点与基础设施基线 | 已完成 | `G1`；涉及 GHCR/节点时再分别取得 `G2/G3` | 发布链、制品、配置骨架和三 manager 基线通过 |
 | 2. 数据服务与单副本基线 | 已完成 | 阶段 1 通过且已取得 `G3` | PostgreSQL/Redis、单次 bootstrap、单副本与本机 Caddy 基线通过 |
 | 3. 多实例前置收敛 | 已完成 | 阶段 2 通过且代码修补范围再次确认 | 必要 P0 修补、进程级测试、候选制品和三进程冷启动满足门槛；未启用 `node2`/`node3` 应用副本 |
-| 4. 三副本与故障演练 | 进行中（PostgreSQL readiness 本地候选完成，节点部署与现场复测待授权） | 阶段 3 通过；三副本、滚动回滚和各故障子集分别取得 `G4-A/G4-B1/G4-B2a/G4-B2b-1/G4-B2b-2a/G4-B2b-2b/G4-B2c` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
+| 4. 三副本与故障演练 | 进行中（PostgreSQL 容器暂停/恢复复测已通过，剩余故障未授权） | 阶段 3 通过；三副本、滚动回滚和各故障子集分别取得 `G4-A/G4-B1/G4-B2a/G4-B2b-1/G4-B2b-2a/G4-B2b-2b/G4-B2c` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
 | 5. 环境交付 | 未开始 | 阶段 4 通过 | 交付物、限制和验收报告完成并取得 `G5` |
 
 ## 5. 阶段 0：需求冻结与架构决策
@@ -513,7 +514,7 @@ deploy/cluster/
 
 ## 9. 阶段 4：三副本与故障演练
 
-阶段 4 拆分授权：`G4-A` 覆盖三副本启用，`G4-B1` 覆盖 `S4-C` 受控滚动、失败暂停和实际回滚，两者均已完成；`G4-B2a` 覆盖 `S4-D` 单 task、单节点和 Caddy 重启恢复，`G4-B2b-1` 覆盖 Redis 暂停/恢复，现均已完成；`G4-B2b-2a` PostgreSQL 暂停/恢复已执行但 readiness 门槛未通过；`G4-B2b-2b` 数据节点中断与 `G4-B2c` OOM/受控 migration 失败仍未授权。所有故障注入只允许作用于本地测试环境，不触碰生产或已有生产数据。
+阶段 4 拆分授权：`G4-A` 覆盖三副本启用，`G4-B1` 覆盖 `S4-C` 受控滚动、失败暂停和实际回滚，两者均已完成；`G4-B2a` 覆盖 `S4-D` 单 task、单节点和 Caddy 重启恢复，`G4-B2b-1` 覆盖 Redis 暂停/恢复，现均已完成；`G4-B2b-2a` PostgreSQL 容器暂停/恢复在 `ext.3` 同场景复测后已通过；`G4-B2b-2b` 数据节点中断与 `G4-B2c` OOM/受控 migration 失败仍未授权。所有故障注入只允许作用于本地测试环境，不触碰生产或已有生产数据。
 
 ### 9.1 S4-A：启用三个 global 副本
 
@@ -624,12 +625,22 @@ deploy/cluster/
 - 阻塞 pinger 测试覆盖三个并发 caller、首个 caller 取消后的跟随请求、底层 `PingContext` 仅调用一次，以及释放探测后的恢复。`go test ./extends/lifecycle -count=1`、`go test -race ./extends/lifecycle -count=1`、目标并发测试 `-count=100`、`go vet ./extends/lifecycle`、相关包测试和 `go test ./... -count=1` 均通过；
 - 该修补提交形成时 `backend/extends/VERSION` 仍为 `ext.2`，未创建新 tag 或镜像，未上传、部署或修改 Multipass 运行态；后续候选构建由独立授权处理。因此本记录只关闭仓库代码与测试子门槛，`G4-B2b-2a` 仍须在候选版本部署后重复原 PostgreSQL 暂停/恢复场景，才能重新判定是否通过。
 
-`G4-B2b-2a-candidate` 本地 ARM64 候选记录（2026-07-27，节点部署与现场复测待授权）：
+`G4-B2b-2a-candidate` 本地 ARM64 候选记录（2026-07-27，候选形成时节点部署与现场复测待授权）：
 
 - `593a261d7` 提交审核无阻断；公开构造函数未变，包内窄接口、互斥状态与 caller/probe context 分离符合最小修补边界。随后仅将 `backend/extends/VERSION` 从 `ext.2` 提升为 `ext.3`，形成版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`；上游版本仍为 `0.1.165`，未创建或推送 `v0.1.165-ext.3` tag；
 - `go mod verify` 与 `go test ./... -count=1` 通过；使用固定 `Version=0.1.165-ext.3`、上述 commit 和 commit date 构建 `linux/arm64` 本地镜像 `sub2api-local/sub2api:v0.1.165-ext.3-arm64`。source image ID 为 `sha256:03e01bbd24c1818ac1f8ad9ec6413969ed9e6e69a524cb2795f993ed756da6aa`，`/app/sub2api` SHA-256 为 `c6d73fc00d060cf1d04ae0ffc3f76796b1c679bd14205692ad3f73c63e4e8b65`；
 - 镜像平台、OCI version/revision/source 标签及 `--version` 输出均与构建输入一致；按现有 `docker image save` 路径两次流式计算的归档 SHA-256 均为 `43d69c5fa76eb0f3c809a97251f2eee3477c04cb5324d6449fea6b6bb67b1f6c`；
-- 候选只保留在 macOS 本机 Docker。三个 Multipass 节点均不存在该 tag，活动 service 仍为 `sub2api-local/sub2api:v0.1.165-ext.2-arm64`；未修改 `deploy/cluster/env/local-arm64/cluster.env`，未上传 GHCR、未分发、未部署、未运行 migration，也未重复故障注入。仓库 VERSION 与活动清单在候选审核期有意不一致，当前 checkout 的 `validate:stack ENV=local` 会按门禁拒绝，部署授权前不得通过改校验逻辑绕过。
+- 候选形成时只保留在 macOS 本机 Docker。三个 Multipass 节点均不存在该 tag，活动 service 当时仍为 `sub2api-local/sub2api:v0.1.165-ext.2-arm64`；未修改 `deploy/cluster/env/local-arm64/cluster.env`，未上传 GHCR、未分发、未部署、未运行 migration，也未重复故障注入。仓库 VERSION 与活动清单在候选审核期有意不一致，当时 checkout 的 `validate:stack ENV=local` 会按门禁拒绝，部署授权前不得通过改校验逻辑绕过。
+
+`G4-B2b-2a-deploy-retest` 三节点部署与 PostgreSQL 复测记录（2026-07-27，已通过）：
+
+- 本机 `sub2api-local` Docker context 元数据缺失后，只把宿主机既有 SSH 公钥加入 node1 并重建 `ssh://ubuntu@192.168.252.2` 管理 context；未启用密码 SSH、未暴露 Docker TCP daemon，也未改变任何 service。发布操作仍由 node1 的固定 GoTask 工作副本执行；
+- 已核验候选归档以 source image ID `sha256:03e01bbd24c1818ac1f8ad9ec6413969ed9e6e69a524cb2795f993ed756da6aa`、归档 SHA-256 `43d69c5fa76eb0f3c809a97251f2eee3477c04cb5324d6449fea6b6bb67b1f6c` 分发到三个节点，三节点 node image ID 均为 `sha256:fd867fc19da56a25bae98930d2186159f3650a83cc5cefb99164ae4951f01a6f`，容器内 `/app/sub2api` SHA-256 均为 `c6d73fc00d060cf1d04ae0ffc3f76796b1c679bd14205692ad3f73c63e4e8b65`；活动清单提交 `3608d6c7b` 固定上述身份；
+- `release:plan -> release:apply -> release:verify` 完成 `ext.2 -> ext.3` 受控滚动，Swarm update 从 `2026-07-27 05:22:26.365631225 UTC` 到 `05:23:58.686147025 UTC` 完成。node1/node2/node3 新 task 分别为 `kxnoaqpr87qg`、`21sv0gl68zcv`、`w9r8eytyd5k7`，均为 healthy、报告 `0.1.165-ext.3` 与 commit `6c859d2d83e03c49fb49a53e530932d7a6c789d7`；三节点直连 `/health`、`/ready` 与 HTTPS 均为 200，migration 保持 `236/236/0`；
+- 入口采样覆盖 node1 与 node2 的替换窗口，期间最多同时一个 HTTPS 入口失败；采样在 node3 替换前结束，因此不把该采样外推为覆盖完整滚动。node3 由最终 healthy task、逐节点 200 与 `release:verify` 单独确认；
+- PostgreSQL 容器 `81c5e2921ae8` 在退出 trap 保护下从 `05:24:39.773162483 UTC` 暂停至 `05:25:04.865466972 UTC`，约 25.09 秒。期间三个节点 `/health` 均为 200；每节点连续三次、共九次直连 `/ready` 均返回 503，耗时范围约 2.0015–2.0653 秒，三个 HTTPS 入口均返回 503，原先连续 4 秒得到 `000` 的问题没有复现；
+- 解除暂停后约 15.75 秒取得首个完整恢复样本：PostgreSQL 接受连接且 healthy，三个直连 `/health`、`/ready` 与 HTTPS 均恢复 200。PostgreSQL task `b5ysani4aye7gl2gbpxwv03v6`、容器、volume、三个 Sub2API/Caddy task 均未替换，migration 仍为 `236/236/0`，近 10 分钟 Sub2API panic/fatal 为 0，最终 `release:verify` 通过；
+- 本次只关闭“同一 PostgreSQL 容器短时暂停/恢复”的 readiness 门槛，不覆盖 PostgreSQL 进程重启、volume 重挂载、node1 停止、备份恢复、OOM、migration 失败或生产故障域。未创建 `v0.1.165-ext.3` Git tag，未上传 GHCR，因复测通过未执行 `ext.2` 回滚。
 
 禁止在本阶段执行：删除持久化卷、`docker stack rm` 通用卸载、破坏真实业务数据、生产 DNS 修改或未记录的 `--force` 删除。
 
@@ -647,7 +658,7 @@ deploy/cluster/
 - [ ] 多实例安全专项全部通过；
 - [ ] shared TLS storage 的 Caddy 重启恢复及 Redis 短时中断期间既有证书服务已通过；Redis 不可用时 Caddy 冷启动、持久化恢复与续期协调仍待验证；
 - [x] 滚动更新、失败暂停和旧组合回滚可复现；
-- [ ] 故障矩阵低风险子集及 Redis 暂停/恢复已通过；PostgreSQL readiness 本地 ARM64 候选已完成，但尚未分发、部署和现场复测，数据节点中断、OOM 和 migration 失败仍待验证；
+- [ ] 故障矩阵低风险子集、Redis 暂停/恢复及 PostgreSQL 容器暂停/恢复均已通过；数据节点中断、OOM 和 migration 失败仍待验证；
 - [ ] 未把本地验证表述为生产 HA、容量、DNS 摘除或灾难恢复证明。
 
 ## 10. 阶段 5：环境交付
@@ -771,9 +782,9 @@ deploy/cluster/
 - [x] `G4-B2b-1` Redis 暂停/恢复已执行并闭环；
 - [x] `G4-B2b-2a` PostgreSQL readiness 失败已按 `backend/extends/lifecycle` 两文件白名单完成最小修补与测试；
 - [x] 修补候选的 `ext.3` 版本提升与本地 ARM64 构建已独立授权并闭环；
-- [ ] 候选节点分发、活动清单变更、受控部署和原场景现场复测是否另行授权并闭环；
+- [x] 候选节点分发、活动清单变更、受控部署和原场景现场复测已另行授权并闭环；
 - [ ] `G4-B2b-2b/G4-B2c` 剩余故障矩阵范围是否接受；
 - [ ] 阶段 5 交付物是否足够；
-- [x] `G1/G2/G3` 已分别授权并完成；`G4-A`、`S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D`、`G4-B2b-1`、`G4-B2b-2a-fix` 与 `G4-B2b-2a-candidate` 已完成；`G4-B2b-2a` 现场门槛仍未通过，`G4-B2b-2b/G4-B2c` 未授权。
+- [x] `G1/G2/G3` 已分别授权并完成；`G4-A`、`S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D`、`G4-B2b-1`、`G4-B2b-2a-fix`、`G4-B2b-2a-candidate` 与 `G4-B2b-2a-deploy-retest` 已完成，PostgreSQL 容器暂停/恢复现场门槛已通过；`G4-B2b-2b/G4-B2c` 未授权。
 
-当前 G0/G1/G2/G3、实施阶段 0 至阶段 3、`S4-A/S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D` 低风险子集和 `G4-B2b-1` Redis 暂停/恢复均已通过；`G4-B2b-2a-fix` 仓库修补与 `G4-B2b-2a-candidate` 本地 ARM64 候选已完成，但原 `G4-B2b-2a` 现场门槛仍未通过。下一步先审核候选提交与三项身份摘要，再单独授权候选归档分发、活动清单切换、受控三副本滚动和原 PostgreSQL 暂停/恢复场景复测；失败时回滚到已验证 `ext.2`。获得该授权前不修改活动清单、不向节点分发候选、不部署或重复故障注入，也不执行数据节点中断、OOM 或受控 migration 失败。
+当前 G0/G1/G2/G3、实施阶段 0 至阶段 3、`S4-A/S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D` 低风险子集、`G4-B2b-1` Redis 暂停/恢复及 `G4-B2b-2a` PostgreSQL 容器暂停/恢复均已通过，活动本地集群为 `ext.3`。下一步建议先审核本轮清单与现场证据，再单独授权创建 annotated Git tag `v0.1.165-ext.3` 并固定到版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`；该动作只推送 Git tag，不上传 GHCR。tag 闭环后再单独决定是否授权 `G4-B2b-2b` 数据节点故障；当前不执行数据节点中断、OOM、受控 migration 失败、生产部署或 DNS 变更。

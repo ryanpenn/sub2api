@@ -1,10 +1,10 @@
 # Sub2API 多节点部署方案
 
-> 状态：本地验证方案设计与阶段 0 已完成，G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集与 G4-B2b-1 Redis 中断恢复已通过；G4-B2b-2a PostgreSQL 暂停/恢复已执行但 readiness 门槛未通过，其仓库最小修补、`ext.3` 版本提升与本地 ARM64 候选构建已完成，节点分发、部署和现场复测尚未授权；数据节点及资源/迁移故障仍未授权；生产容量细项与生产监控目标按生产准入门槛后续补齐
+> 状态：本地验证方案设计与阶段 0 已完成，G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 中断恢复与 G4-B2b-2a PostgreSQL 容器暂停/恢复均已通过；`ext.3` 已在三个节点运行，数据节点及资源/迁移故障仍未授权；生产容量细项与生产监控目标按生产准入门槛后续补齐
 > 创建日期：2026-07-26  
 > 更新日期：2026-07-27
 > 节点信息来源：[`Multipass-Nodes.md`](./Multipass-Nodes.md)  
-> 当前边界：G1 已生成发布链和 `deploy/cluster` 骨架，G2 已发布 private GHCR 首版双架构制品，G3 已完成三 manager、共享 PostgreSQL/Redis、一次性 bootstrap 与 node1 单副本 TLS 基线；阶段 3 多实例前置收敛及 `v0.1.165-ext.2` 本地候选验证已通过，G4-A 已把正式 Sub2API/Caddy 扩展为三节点 `3/3`，S4-B 已完成非破坏性专项，G4-B1/S4-C 已完成受控滚动、失败暂停、旧清单回滚及模型价格 Config 回滚，G4-B2a/S4-D 已完成单 task、单节点与 Caddy 重启恢复，G4-B2b-1 已完成 Redis 暂停/恢复；G4-B2b-2a PostgreSQL 暂停/恢复暴露直连 `/ready` 超时偏差，`backend/extends/lifecycle` 两文件最小修补与 `ext.3` 本地 ARM64 候选已完成，但活动清单和正式三副本仍为 `ext.2`，当前不分发或部署候选、不重复故障注入、不执行数据节点中断、OOM、受控 migration 失败、生产部署、数据迁移或切流
+> 当前边界：G1 已生成发布链和 `deploy/cluster` 骨架，G2 已发布 private GHCR 首版双架构制品，G3 已完成三 manager、共享 PostgreSQL/Redis、一次性 bootstrap 与 node1 单副本 TLS 基线；阶段 3 多实例前置收敛及 `v0.1.165-ext.2` 本地候选验证已通过，G4-A 已把正式 Sub2API/Caddy 扩展为三节点 `3/3`，S4-B 已完成非破坏性专项，G4-B1/S4-C 已完成受控滚动、失败暂停、旧清单回滚及模型价格 Config 回滚，G4-B2a/S4-D 已完成单 task、单节点与 Caddy 重启恢复，G4-B2b-1 已完成 Redis 暂停/恢复；G4-B2b-2a 在 `ext.2` 暴露的直连 `/ready` 超时偏差已经 `backend/extends/lifecycle` 两文件最小修补，`ext.3` 已按固定归档分发并滚动到三个正式副本，同一 PostgreSQL 容器暂停/恢复复测已通过。当前不执行数据节点中断、OOM、受控 migration 失败、生产部署、数据迁移或切流
 
 ## 1. 文档目的
 
@@ -405,7 +405,7 @@ curl --noproxy '*' --cacert /tmp/sub2api-caddy-root.crt \
   --resolve sub2api.test:443:192.168.252.4 https://sub2api.test/health
 ```
 
-当前正式 service 已部署 `v0.1.165-ext.2`，三个节点均以 `/ready` 验证域名、TLS、共享依赖和本机代理链路。`v0.1.165-ext.1` 仍只作为 node1 上已核实的回滚镜像与 Swarm `PreviousSpec` 保留，本轮未实际执行 rollback。
+当前正式 service 已部署 `v0.1.165-ext.3`，三个节点均以 `/ready` 验证域名、TLS、共享依赖和本机代理链路。`v0.1.165-ext.2` 镜像保留在三个节点并由 Swarm `PreviousSpec` 指向，作为已核实的回滚输入；本轮复测通过，未实际执行 rollback。
 
 首次签发完成后，从任一 Caddy 的本机 admin API 导出 Local CA 根证书。admin API 只监听节点回环地址，不向局域网或公网开放：
 
@@ -552,7 +552,7 @@ sudo killall -HUP mDNSResponder
 | --- | --- | --- |
 | `backend/extends` 代码修补 | OAuth Redis SessionStore、最小 readiness/drain lifecycle，以及失败测试证明无法通过部署或现有机制解决的具体多实例安全缺口 | 先验证、后修补；并发槽直接删除 upstream 启动调用，不建立 ext 包装层；图片与后台任务没有失败证据时不产生代码提交；连接绑定状态保持原实现，不建设通用 leader、调度、连接或 limiter 框架 |
 | `backend/extends/VERSION` 发布元数据 | fork 自有 `ext.N` 版本；与上游 `backend/cmd/server/VERSION` 只读组合形成最终版本 | 只由 fork 发布准备提交更新，全局独立递增且不随 upstream 重置；不承载 Go 代码、运行时状态或功能开关 |
-| `deploy/cluster` 集群部署配置 | 共享 PostgreSQL/Redis、单次临时 bootstrap、版本化只读 `config.yaml` Swarm secret、经审计的模型价格 Swarm Config、统一 JWT/TOTP Secret、现有启动 migration 的串行化验证、Swarm Stack 与副本放置、Caddy 本机代理/TLS storage/原地更新阻断、容器资源限制、统一 ext 版本和固定镜像 digest，以及统一启用现有图片 limiter 和配置相同的每副本参数 | 作为集群部署配置的统一存放目录，不放业务修补代码；正式副本禁用 `AUTO_SETUP`，不新增长期 bootstrap 服务或 migration Job；模型价格通过版本化 Config 和滚动更新管理，不修改价格服务代码；应用更新只走 Swarm，不修改容器内二进制；G1 已生成静态配置骨架，但尚未创建任何 Swarm 对象或部署服务 |
+| `deploy/cluster` 集群部署配置 | 共享 PostgreSQL/Redis、单次临时 bootstrap、版本化只读 `config.yaml` Swarm secret、经审计的模型价格 Swarm Config、统一 JWT/TOTP Secret、现有启动 migration 的串行化验证、Swarm Stack 与副本放置、Caddy 本机代理/TLS storage/原地更新阻断、容器资源限制、统一 ext 版本和固定镜像 digest，以及统一启用现有图片 limiter 和配置相同的每副本参数 | 作为集群部署配置的统一存放目录，不放业务修补代码；正式副本禁用 `AUTO_SETUP`，不新增长期 bootstrap 服务或 migration Job；模型价格通过版本化 Config 和滚动更新管理，不修改价格服务代码；应用更新只走 Swarm，不修改容器内二进制；G1 已生成静态配置骨架，G3/G4 已据此创建并验证本地 Swarm 对象与服务 |
 
 如果部署约束足以消除风险，则该事项不进入 `extends`。如果必须改代码，也应先复用现有实体、Redis、key namespace、配置和接口；若无必要不新增实体或额外抽象。
 
@@ -1007,7 +1007,7 @@ Multipass 本地验证是独立交付例外：开发机使用与 G2 相同的固
 
 #### 6.8.1 已确认原则
 
-当前本文所在 fork 已完成仓库关系设置：`origin` 指向 `https://github.com/ryanpenn/sub2api.git`，`upstream` 指向 `https://github.com/Wei-Shaw/sub2api.git`；当前 `backend/cmd/server/VERSION=0.1.165`、`backend/extends/VERSION=ext.3`，只读组合版本为 `0.1.165-ext.3`，而活动集群仍固定已发布的 `v0.1.165-ext.2`。G1 完整实施提交链为 `4077dd769f54e69cd8a6acec6b44ad5e322ba4d9`（静态骨架）→ `08825263b6b04e72e8bba45273d406969a900aac`（发布面收敛）→ `2842f9ba729dae6d6d7d58e1881a92730108286b`（关闭最终发布阻断）→ `5779d0b4b0d7b4821f2283afd667598380343386`（G1 文档闭环），最终 CI `30206791653` 与 Security Scan `30206791734` 均通过。G2 已发布固定到 `5779d0b4b0d7b4821f2283afd667598380343386` 的 tag 和双架构制品并回填 digest；阶段 3 及 G4-A 已完成 `ext.2` 多实例安全修补、固定 ARM64 归档和三节点正式部署，后续 PostgreSQL readiness 修补已形成未部署的本地 `ext.3` ARM64 候选。因此以下内容同时作为既有实施约束和后续阶段的边界：
+当前本文所在 fork 已完成仓库关系设置：`origin` 指向 `https://github.com/ryanpenn/sub2api.git`，`upstream` 指向 `https://github.com/Wei-Shaw/sub2api.git`；当前 `backend/cmd/server/VERSION=0.1.165`、`backend/extends/VERSION=ext.3`，只读组合版本与活动本地集群均为 `0.1.165-ext.3`，版本提交为 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`，尚未创建同名 Git tag 或上传 GHCR。G1 完整实施提交链为 `4077dd769f54e69cd8a6acec6b44ad5e322ba4d9`（静态骨架）→ `08825263b6b04e72e8bba45273d406969a900aac`（发布面收敛）→ `2842f9ba729dae6d6d7d58e1881a92730108286b`（关闭最终发布阻断）→ `5779d0b4b0d7b4821f2283afd667598380343386`（G1 文档闭环），最终 CI `30206791653` 与 Security Scan `30206791734` 均通过。G2 已发布固定到 `5779d0b4b0d7b4821f2283afd667598380343386` 的 tag 和双架构制品并回填 digest；阶段 3 及 G4-A 已完成 `ext.2` 多实例安全修补、固定 ARM64 归档和三节点正式部署，后续 PostgreSQL readiness 修补及 `ext.3` 三节点滚动/复测也已闭环。因此以下内容同时作为既有实施约束和后续阶段的边界：
 
 1. 保持 `origin` 指向自有 fork、`upstream` 指向原项目，避免误向原项目推送；实施前后均通过只读命令核对 remote。
 2. 仅由人工按需从 `upstream` 获取更新，不设置固定频率，也不启用定时同步或自动合并；上游同步提交与自定义功能提交分离，确保来源、冲突和回滚范围可追溯。
@@ -1303,7 +1303,7 @@ task ops:node-status
 
 同日完成 S4-B 非破坏性专项：node1 签发的 JWT 可跨 node2/node3 使用，refresh token 跨节点轮换、旧 token 拒绝和注销后撤销均通过；一个临时 API Key 在三个节点间写后可见并已删除；三个节点的用户、分组、模型价格、版本和管理 WebSocket 一致。OAuth、SSE/OpenAI WebSocket、生图 limiter、Batch lock、Scheduled Test、Account/Proxy expiry、计费和 migration 使用既有协议级、race 或隔离 integration harness 验证，没有为凑实机用例新增 Provider、Scheduled Test plan、业务实体或外部费用。正式数据库 migration 保持 `236/236` 唯一、零空 checksum、零重复 filename，敏感日志扫描命中 0。管理员 TOTP 当前未启用；滚动与回滚已由后续 G4-B1/S4-C 完成，三个正式 task 同时替换、双协调后端同时故障、TLS 续期/恢复和故障矩阵仍需 G4-B2 或对应后续授权，不能由 S4-B 结果推定通过。
 
-随后完成获授权的 G4-B1/S4-C：固定旧制品实际回滚到 `v0.1.165-ext.1` 后重新滚动到 `ext.2`；可恢复错误 Secret 使 Swarm 明确进入 `paused` 且验证任务失败，恢复正式 Secret 后三个副本回到一致状态；模型价格 Config 完成不重建镜像的滚动更新和旧 Config 回滚。验证同时发现一次 Stack 变更多个 service 时，Swarm 会分别并行滚动：Sub2API healthcheck 与 Caddy upstream health 同时变化曾出现 1 个样本有两个入口短暂失败。第一期因此固定为跨 service 关联变更串行执行，新旧应用共用过渡健康路径，先应用、后应用 healthcheck、最后 Caddy upstream health。最终 Sub2API/Caddy `3/3`、数据服务 `1/1`、三个 `/ready=200`，没有残留临时 Secret/Config；后续 G4-B2a/S4-D 低风险子集与 G4-B2b-1 Redis 暂停/恢复已另行通过，G4-B2b-2a PostgreSQL 暂停/恢复已执行但 readiness 门槛失败，数据节点及资源/迁移故障仍未授权。
+随后完成获授权的 G4-B1/S4-C：固定旧制品实际回滚到 `v0.1.165-ext.1` 后重新滚动到 `ext.2`；可恢复错误 Secret 使 Swarm 明确进入 `paused` 且验证任务失败，恢复正式 Secret 后三个副本回到一致状态；模型价格 Config 完成不重建镜像的滚动更新和旧 Config 回滚。验证同时发现一次 Stack 变更多个 service 时，Swarm 会分别并行滚动：Sub2API healthcheck 与 Caddy upstream health 同时变化曾出现 1 个样本有两个入口短暂失败。第一期因此固定为跨 service 关联变更串行执行，新旧应用共用过渡健康路径，先应用、后应用 healthcheck、最后 Caddy upstream health。最终 Sub2API/Caddy `3/3`、数据服务 `1/1`、三个 `/ready=200`，没有残留临时 Secret/Config；后续 G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 暂停/恢复均已通过。G4-B2b-2a 首次在 `ext.2` 下失败，最小修补后的 `ext.3` 已滚动部署并在同一 PostgreSQL 容器暂停/恢复场景复测通过；数据节点及资源/迁移故障仍未授权。
 
 输出：
 
@@ -1496,7 +1496,7 @@ task ops:node-status
 23. **服务模式（已确认）**：Sub2API 使用 `global` service；每个 `sub2api=true` 节点自动运行 1 个副本，新增合格节点并添加标签后自动扩容，节点故障时不在其他节点补第二副本。
 24. **Caddy 运行方式（已确认）**：Caddy 使用 Swarm `global` service；每个 `caddy=true` 节点运行 1 个 host-network task，直接绑定 `80/443`，通过 Swarm Config/Secret 获取配置，不运行 systemd Caddy、不挂载 Docker Socket、不使用 routing mesh。
 25. **本地 TLS（已确认）**：使用 `sub2api.test` 和 Caddy `tls internal`；命令行通过 `curl --resolve` 精确访问各节点并使用同一 Local CA 根证书，浏览器按需使用单条 `/etc/hosts` 映射和 macOS System Keychain；公网 ACME 留到生产预演。
-26. **镜像版本与仓库（已确认）**：活动 Sub2API 为 `v0.1.165-ext.2`；未部署的本地修补候选为 `v0.1.165-ext.3`，只存在于 macOS Docker；Caddy 为 `v2.11.4`（commit `e2eee6a7fce366321294c9c2a79f3146891dcbdf`），Redis storage module 为 `v1.8.1`（commit `230a32809cc4016427db0c11c925d703132941b1`）。生产发布到两个私有 GHCR package 并固定平台子镜像 digest；Multipass 本地以三重校验的 ARM64 归档上传，不配置 registry 凭据。当前不考虑签名，不使用其他 registry、`latest` 或未核验制品。
+26. **镜像版本与仓库（已确认）**：活动 Sub2API 为 `v0.1.165-ext.3`，版本提交 `6c859d2d8`；ARM64 source image ID 为 `sha256:03e01bbd24c1818ac1f8ad9ec6413969ed9e6e69a524cb2795f993ed756da6aa`，归档 SHA-256 为 `43d69c5fa76eb0f3c809a97251f2eee3477c04cb5324d6449fea6b6bb67b1f6c`，三节点 node image ID 均为 `sha256:fd867fc19da56a25bae98930d2186159f3650a83cc5cefb99164ae4951f01a6f`；尚未创建同名 Git tag 或上传 GHCR，`ext.2` 继续作为已验证回滚输入。Caddy 为 `v2.11.4`（commit `e2eee6a7fce366321294c9c2a79f3146891dcbdf`），Redis storage module 为 `v1.8.1`（commit `230a32809cc4016427db0c11c925d703132941b1`）。生产发布到两个私有 GHCR package 并固定平台子镜像 digest；Multipass 本地以三重校验的 ARM64 归档上传，不配置 registry 凭据。当前不考虑签名，不使用其他 registry、`latest` 或未核验制品。
 27. **容量目标（已确认分阶段）**：生产首期 3 台等规格 AMD64 集群节点，每台不少于 16G 内存和 200M 公网带宽；Caddy reservation 不低于 `1G`，PostgreSQL/Redis 各不低于 `2G`，Sub2API 必设统一 memory hard limit。具体生产 limit、Sub2API reservation、`GOMEMLIMIT`、CPU、磁盘、连接池、普通并发、SSE/WS 连接数、并发生图数、队列/拒绝门槛、最大请求/响应大小和服务目标明确延期到生产峰值分析及 AMD64 单/三副本压测，不阻塞本地阶段 0/1，但完成“容量与可观测性补充方案”前禁止认定生产就绪或切流。当前 4G Multipass 已确认不扩容，本地档固定为 Caddy `128MiB/256MiB`、PostgreSQL `512MiB/768MiB`、Redis `256MiB/512MiB`、Sub2API `512MiB/2GiB`（reservation/hard limit）及 `GOMEMLIMIT=1536MiB`，且不做容量验收。
 28. **S3 与恢复目标（已确认分期）**：上游已有 S3 兼容接口，第一期保持未配置/禁用，不新增接口、实体、SDK、`extends` 代码或备份 service，也不以既定 RPO/RTO 验收；后续目标仍为 PostgreSQL `RPO<=15m`/`RTO<=4h`、Redis/Caddy storage `RPO<=1h`/`RTO<=4h`，具体存放位置、保留期和演练周期另行确认。
 29. **GoTask 发布/运维入口（已确认）**：只作为 `deploy/cluster` 内的薄 CLI 编排层，不引入长驻控制面或新实体；最小目录包含根 Taskfile、`taskfiles/{validate,release,images,ops}.yml`、`stacks/`和 `env/{local-arm64,production-amd64}/`，其中 `images` 仅负责本地归档分发校验，不预建空 `scripts/`；首期 `ops` 只含状态、日志和节点检查，drain/undrain 自动化延期。
@@ -1505,7 +1505,7 @@ task ops:node-status
 32. **本地可观测性（已确认）**：第一期不部署 Prometheus/Grafana/Loki 等常驻组件；使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据和 PostgreSQL/Redis 原生查询，以 `request_id + node + replica` 关联链路，由 GoTask 提供只读状态、日志和采样命令并形成验收记录。生产指标后端、日志集中化、保留期、告警阈值、值班和升级流程纳入生产准入前的“容量与可观测性补充方案”，当前不预设技术选型。
 33. **Swarm 节点角色（已确认）**：`node1`、`node2`、`node3` 固定作为 manager 并保留 worker 能力，以维持三个 manager 的 quorum 并演练单 manager 故障；后续容量扩展节点全部只作为 worker 加入，不把 manager 扩展到 3 个以上。原 manager 永久失效时从合格 worker 中晋升替代节点，只恢复到三个 manager。
 34. **实施产物（已完成 G3）**：ARM64/AMD64 GHCR 平台 digest、本地 ARM64 source/node image ID 与归档 SHA-256 均已回填；发布 tag、fork commit、构建输入、镜像身份和 workflow run 可追溯。
-35. **当前授权**：本地设计与 G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集和 G4-B2b-1 Redis 暂停/恢复已完成并通过；G4-B2b-2a PostgreSQL 暂停/恢复已执行但直连 `/ready` 超过 4 秒无响应，当前门槛未通过。获授权的 `G4-B2b-2a-fix` 已严格在 `backend/extends/lifecycle/manager.go` 与 `manager_test.go` 内完成单 in-flight probe、caller 硬超时和测试；`G4-B2b-2a-candidate` 已完成 `ext.3` 版本提升和本地 ARM64 构建。两项授权均不覆盖 tag、上传、节点分发、活动清单变更、部署或现场复测。获得后续独立授权前不得执行这些动作，也不得执行数据节点中断、OOM、受控 migration 失败。Caddy 从正常共享 storage 重启恢复、Redis 短时中断期间既有证书服务均已验证，但不能外推为 Redis 进程/持久化恢复、Redis 不可用时 Caddy 冷启动或证书续期协调已通过。
+35. **当前授权**：本地设计与 G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 暂停/恢复及 G4-B2b-2a PostgreSQL 容器暂停/恢复已完成并通过。原 `ext.2` 现场 readiness 失败已严格在 `backend/extends/lifecycle/manager.go` 与 `manager_test.go` 内完成单 in-flight probe、caller 硬超时和测试；独立授权的候选构建、归档分发、活动清单切换、`ext.3` 三副本受控滚动及同场景复测均已闭环。当前未授权创建 `v0.1.165-ext.3` Git tag、上传 GHCR、执行数据节点中断、OOM、受控 migration 失败或生产变更。Caddy 从正常共享 storage 重启恢复、Redis 短时中断期间既有证书服务均已验证，但不能外推为 Redis 进程/持久化恢复、Redis 不可用时 Caddy 冷启动或证书续期协调已通过；PostgreSQL 结果也不能外推为进程、volume、节点或备份恢复已通过。
 
 ## 10. 计划产物
 
@@ -1583,6 +1583,7 @@ task ops:node-status
 | 2026-07-27 | 执行 G4-B2b-2a PostgreSQL 暂停/恢复 | 未通过 readiness 门槛，环境已恢复 | 同一 PostgreSQL 容器暂停约 25 秒时，三个应用 `/health=200`，但直连 `/ready` 连续超过 4 秒无响应；Caddy active health 最终让 HTTPS 入口 fail-closed 为 503。恢复后 task/container/volume 与 `schema_migrations=236/236/0` 均不变，`release:verify` 通过。需先审核最小硬超时修补，不得把本次执行记为通过 |
 | 2026-07-27 | 完成 G4-B2b-2a-fix 仓库最小修补 | 代码与测试已通过，现场门槛仍待复测 | 代码提交 `593a261d7` 仅修改 `backend/extends/lifecycle/manager.go` 与 `manager_test.go`：同一时刻只运行一个 PostgreSQL probe，每个 readiness caller 按自己的 deadline 返回，共享 probe 使用独立 2 秒 context；阻塞 pinger 并发/恢复测试、race、vet、相关包及全量 Go 测试通过。`extends/VERSION`、镜像和 Multipass 运行态均未改变，不能据此把 G4-B2b-2a 标记通过 |
 | 2026-07-27 | 完成 G4-B2b-2a-candidate 本地 ARM64 候选 | 本机构建与身份核验已通过，未部署 | `593a261d7` 审核无阻断；版本提交 `6c859d2d8` 将组合版本提升为 `0.1.165-ext.3`。本地镜像 source ID 为 `sha256:03e01bbd24c1818ac1f8ad9ec6413969ed9e6e69a524cb2795f993ed756da6aa`，归档 SHA-256 为 `43d69c5fa76eb0f3c809a97251f2eee3477c04cb5324d6449fea6b6bb67b1f6c`，二进制 SHA-256 为 `c6d73fc00d060cf1d04ae0ffc3f76796b1c679bd14205692ad3f73c63e4e8b65`；未创建 tag、上传、分发或修改活动 `ext.2` 清单 |
+| 2026-07-27 | 完成 G4-B2b-2a-deploy-retest 三节点部署与现场复测 | 已通过（保留故障边界） | 活动清单提交 `3608d6c7b` 固定 `ext.3` 三重镜像身份，三节点 node image ID 均为 `sha256:fd867fc19da56a25bae98930d2186159f3650a83cc5cefb99164ae4951f01a6f`；受控滚动后三个 task healthy、逐节点 `/ready` 和 HTTPS 为 200。PostgreSQL 容器暂停约 25.09 秒期间九次直连 `/ready` 均在约 2.0015–2.0653 秒返回 503，恢复后 task/container/volume、`schema_migrations=236/236/0` 均不变且 `release:verify` 通过。只覆盖同一容器暂停/恢复；未创建 Git tag、上传 GHCR 或执行其他故障 |
 | 2026-07-26 | WebSocket 采用进程内登记与到期重连 | 已确认第一期最小范围 | draining 拒绝新 upgrade；已有连接可继续到窗口结束并在到期发送 `1012 Service Restart`；第一期不识别当前/new turn，不迁移连接，不使用 Redis 或新增实体 |
 | 2026-07-26 | WebSocket 连接绑定状态保持进程内 | 已确认 | 重连建立新连接，不跨副本续接未完成 turn；仅确需跨请求/副本读取的状态复用现有 Redis，不新增实体 |
 | 2026-07-26 | 保留应用启动 migration 并由 PostgreSQL 锁串行化 | 已确认 | 不新增 migration Job/ext；三个副本可同时启动但不能同时执行 SQL；失败或超时副本不进入 ready，具体超时、`*_notx.sql` 恢复和 forward-only 回滚门槛见第 6.4.1 节 |

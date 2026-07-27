@@ -47,7 +47,7 @@ multipass exec node3 -- <command>
 - Redis 所在 `node2` 已通过 `/etc/sysctl.d/99-sub2api-redis.conf` 持久化 `vm.overcommit_memory=1`；`node1`/`node3` 当前不承载 Redis，保持系统默认值；
 - 镜像平台使用 OCI 名称 `arm64`，Docker 29.6.1 的 Swarm placement 字段实测为 `aarch64`，部署配置已分别记录；
 - `sub2api=true` 与 `caddy=true` 已依次添加到 `node1`、`node2`、`node3`；`postgres=true` 仍只在 node1，`redis=true` 仍只在 node2；
-- node1 的本地人工发布入口使用 GoTask `3.50.0`；当前 Sub2API ARM64 归档 SHA-256 为 `3e1c69b1d96417acbd615ca7d48b8dbda60f070e65ccb6c0f80c59a095acae70`，Caddy 归档 SHA-256 为 `cc8f05e47661ca5b41998b884831abc8e126082cf9ed697cd82fdc56d9c92ff2`。
+- node1 的本地人工发布入口使用 GoTask `3.50.0`；当前 Sub2API ARM64 归档 SHA-256 为 `43d69c5fa76eb0f3c809a97251f2eee3477c04cb5324d6449fea6b6bb67b1f6c`，Caddy 归档 SHA-256 为 `cc8f05e47661ca5b41998b884831abc8e126082cf9ed697cd82fdc56d9c92ff2`。
 
 当前 service 状态：PostgreSQL/Redis 均按固定 ARM64 digest 运行，分别位于 `node1`/`node2`，保持 `1/1`；Sub2API/Caddy 使用本地归档镜像在三个节点各运行一个 task，均为 `3/3`。PostgreSQL `pg_isready` 通过且没有发布端口，Redis 通过官方 entrypoint 降权后主进程使用 `redis` 用户。三个 Caddy 入口的 `https://sub2api.test/ready` 均返回 JSON 200，证明各自本机 Sub2API 可同时连接共享 PostgreSQL/Redis；在线更新检查入口均被 Caddy 拒绝为 403。历史失败 task 只作为证据保留，验收以当前 desired-state task 数和健康状态为准。
 
@@ -55,10 +55,12 @@ multipass exec node3 -- <command>
 
 | 组件 | 本地 tag | 归档 SHA-256 | node1/node2/node3 image ID |
 | --- | --- | --- | --- |
-| Sub2API | `sub2api-local/sub2api:v0.1.165-ext.2-arm64` | `3e1c69b1d96417acbd615ca7d48b8dbda60f070e65ccb6c0f80c59a095acae70` | `sha256:bb638caa30eac89bf8bb5ee6395361f941f83fc0f810150249901ba896561703` |
+| Sub2API | `sub2api-local/sub2api:v0.1.165-ext.3-arm64` | `43d69c5fa76eb0f3c809a97251f2eee3477c04cb5324d6449fea6b6bb67b1f6c` | `sha256:fd867fc19da56a25bae98930d2186159f3650a83cc5cefb99164ae4951f01a6f` |
 | Caddy | `sub2api-local/caddy:v2.11.4-redis-v1.8.1-arm64` | `cc8f05e47661ca5b41998b884831abc8e126082cf9ed697cd82fdc56d9c92ff2` | `sha256:26a85a756bcbd9d2f94d9bc55e48fce85ee55cf181b6002a3c82e1292504b739` |
 
-正式 Sub2API `v0.1.165-ext.2` 固定到 commit `9aca50a8fd1ad34de6ef6ecf08eb58800a19fa89`，source image ID 为 `sha256:d6f956d592de70534e0c94fcff4199515dda555acc6f6ccef6405099daff5539`。旧版本 `v0.1.165-ext.1` 的 node image ID 为 `sha256:658b62d53062a22140670a40622b65f69432c7f32293113e2960c74b826e1e04`；G4-B1 已按历史归档 SHA-256 把旧镜像加载到三个节点并完成实际回滚，最终正式 service 已重新恢复为 `ext.2`。
+当前 Sub2API `v0.1.165-ext.3` 固定到版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`，source image ID 为 `sha256:03e01bbd24c1818ac1f8ad9ec6413969ed9e6e69a524cb2795f993ed756da6aa`，容器内 `/app/sub2api` SHA-256 为 `c6d73fc00d060cf1d04ae0ffc3f76796b1c679bd14205692ad3f73c63e4e8b65`。尚未创建 `v0.1.165-ext.3` Git tag，也未上传 GHCR。已验证的 `v0.1.165-ext.2` 镜像仍保留在三个节点作为回滚输入；更早的 `ext.1` 只作为 G4-B1 实际回滚证据保留。
+
+宿主机曾因本地 Docker context 元数据缺失而无法直接访问 Swarm。恢复时只将宿主机既有 SSH 公钥加入 node1，并重建 `sub2api-local=ssh://ubuntu@192.168.252.2`；没有启用密码 SSH、没有暴露 Docker TCP daemon，也没有改变 service。正式发布命令仍从 node1 的固定工作副本执行。
 
 三个 Caddy 入口共用的 Local CA 根证书 SHA-256 指纹为 `1C:F3:6C:A9:FF:B0:AE:B9:25:3E:B0:47:95:D4:76:5A:F0:41:B8:EE:3A:B7:7A:07:58:E4:F9:7A:89:93:A2:CB`。三个入口呈现的叶证书 subject 均为空、关键 SAN 均为 `DNS:sub2api.test`，serial 均为 `6A756405F963CC3B7D3310DCAF348F5B`，SHA-256 指纹均为 `40:FD:12:CF:C3:3C:C4:B8:45:80:75:AD:1F:09:91:C1:4E:A2:5D:FA:50:C5:F1:C2:3E:5C:C1:D5:A6:F3:15:7A`。G4-B2a 已证明单个 Caddy task 从正常共享 storage 重启后仍读取相同证书体系；G4-B2b-1 已证明 Redis 短时不可用期间既有 Caddy task 仍可完成 TLS 握手。Redis 不可用时 Caddy 冷启动和续期协调仍未验证。
 
@@ -115,11 +117,19 @@ multipass exec node3 -- <command>
 
 ## G4-B2b-2a PostgreSQL 中断恢复记录
 
-2026-07-27 在不停止 node1、不修改 volume 或 service spec 的边界内，将 PostgreSQL 容器 `81c5e2921ae8` 暂停约 25.02 秒后恢复。本项执行完成，但 readiness 门槛未通过：
+2026-07-27 首次在 `ext.2` 上将 PostgreSQL 容器 `81c5e2921ae8` 暂停约 25.02 秒后恢复；该次 readiness 门槛未通过：
 
 - 暂停期间三个 Sub2API 均保持直连 `/health=200`，但直连 `/ready` 在多轮 4 秒客户端期限内超时为 `000`，没有返回预期的 503；Caddy active health 在过渡后让三个 HTTPS 入口稳定返回 503，外层入口没有误报 ready；
 - 解除暂停后 PostgreSQL 约 0.25 秒恢复 `pg_isready`，三个直连 `/ready` 恢复 200，三个 HTTPS 入口约 3.3 秒内全部恢复 200，Docker health 约 10.0 秒后恢复 healthy；
 - PostgreSQL task `b5ysani4aye7gl2gbpxwv03v6`、container ID、volume `sub2api-local_postgres_data`、三个 Sub2API/Caddy task 均未变化；`schema_migrations` 恢复前后均为 236 条、236 个唯一 filename、0 个空 checksum；
 - 最终 `release:verify ENV=local` 通过，Sub2API/Caddy 为 `3/3`，PostgreSQL/Redis 为 `1/1`，Sub2API panic/fatal 为 0。
 
-当前证据表明 Caddy/Swarm 外层 probe 能 fail-closed，但应用的 PostgreSQL `PingContext` 未在既定 2 秒预算内返回。仓库已经严格在 `backend/extends/lifecycle/manager.go` 与 `manager_test.go` 内完成单 in-flight probe、caller 硬超时修补和测试，并在 macOS 本机形成 `v0.1.165-ext.3-arm64` 候选；候选尚未加载到任何 Multipass 节点，活动清单、镜像与三个节点的运行态仍为 `ext.2`，因此 `G4-B2b-2a` 门槛仍未通过。获得候选分发、部署和现场复测的后续独立授权前，不重复 PostgreSQL 故障注入；本记录也不覆盖 PostgreSQL 进程重启、volume 重挂载、数据节点停止、备份恢复、OOM、migration 失败或生产故障域。
+该失败证据触发了严格限制在 `backend/extends/lifecycle/manager.go` 与 `manager_test.go` 的单 in-flight probe 与 caller 硬超时修补。修补后的 `v0.1.165-ext.3-arm64` 已按 source image ID、归档 SHA-256 和 node image ID 三重校验分发并滚动部署到三个节点，活动清单提交为 `3608d6c7b`。
+
+同日复测时，PostgreSQL 容器在退出 trap 保护下从 `05:24:39.773162483 UTC` 暂停至 `05:25:04.865466972 UTC`，约 25.09 秒：
+
+- 三个节点 `/health` 均保持 200；每节点连续三次、共九次直连 `/ready` 均返回 503，耗时约 2.0015–2.0653 秒；三个 HTTPS 入口均返回 503，原 4 秒 `000` 未复现；
+- 解除暂停后约 15.75 秒取得首个完整恢复样本，PostgreSQL 已 accepting/healthy，三个直连 `/health`、`/ready` 与 HTTPS 均恢复 200；
+- PostgreSQL task `b5ysani4aye7gl2gbpxwv03v6`、容器 `81c5e2921ae8`、volume `sub2api-local_postgres_data`、三个 Sub2API task 和三个 Caddy task 均未替换；`schema_migrations` 保持 `236/236/0`，近 10 分钟 Sub2API panic/fatal 为 0，最终 `release:verify ENV=local` 通过。
+
+因此 `G4-B2b-2a` 只在“同一 PostgreSQL 容器短时暂停/恢复”的范围内通过；不覆盖 PostgreSQL 进程重启、volume 重挂载、数据节点停止、备份恢复、OOM、migration 失败或生产故障域。
