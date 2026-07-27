@@ -1,6 +1,6 @@
 # GoTask 发布与运维手册
 
-> 状态：G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 中断恢复与 G4-B2b-2a PostgreSQL 容器暂停/恢复均已通过；`ext.3` 已在三个节点运行，数据节点及资源/迁移故障未授权
+> 状态：G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 中断恢复与 G4-B2b-2a PostgreSQL 容器暂停/恢复均已通过；`ext.3` 已在三个节点运行；G4-B2b-2b 数据节点故障执行前只读审查已完成，实际数据节点及资源/迁移故障未授权
 > 适用范围：Sub2API Docker Swarm 本地 ARM64 验证与后续 AMD64 生产环境
 > 基线日期：2026-07-27（Asia/Shanghai）
 
@@ -303,6 +303,54 @@ task ops:status
 第一期不提供 `ops:undrain` 自动化；上述命令将节点 availability 恢复为 `active`。必须等 Caddy、Sub2API、TLS、共享依赖和 `/ready` 全部验证通过后，生产环境才能人工恢复该节点的 DNS A 记录。
 
 整个 Sub2API 应用的下线属于独立变更，不复用节点 drain，也不删除 PostgreSQL/Redis。需要明确维护窗口、调用方行为、数据保护和恢复步骤后，再设计带确认门槛的专用任务。
+
+### 7.4 数据节点受控停止/恢复（只读审查完成，实际未授权）
+
+`G4-B2b-2b` 不复用普通节点 drain，也不增加 GoTask、脚本、daemon 或控制面。未来实际执行必须拆成 node2/Redis 与 node1/PostgreSQL 两次独立授权，先 node2，完整恢复后再重新审核 node1。两次都只使用普通 `multipass stop/start`，禁止 `--force`、drain、修改 label/service spec/Secret/Config、volume 操作和同时停止第二个 manager。
+
+每次停止前必须重新执行 `release:verify ENV=local`，记录 manager/Leader、service/task/container、数据 service placement、volume driver/Mountpoint、数据身份及三个入口。PostgreSQL 记录 `system_identifier` 和 migration `count/distinct/null/empty`；Redis 记录 `PONG`、RDB/AOF、DB 1 key-name-set 摘要，DB 0 动态 key 数不作严格相等门槛。
+
+在 macOS 宿主机先建立两层一次性恢复保护。以下模板中的目标节点必须写死为当次已授权的 `node2` 或 `node1`，不能从外部输入拼接：
+
+```bash
+target_node=node2
+recovery_log=/tmp/sub2api-g4-b2b-2b-node2-recovery.log
+
+recover_target() {
+  /usr/local/bin/multipass start "$target_node" >/dev/null 2>&1 || true
+}
+trap recover_target EXIT
+trap 'exit 130' INT TERM HUP
+
+nohup sh -c 'sleep 60; /usr/local/bin/multipass start node2' \
+  >"$recovery_log" 2>&1 &
+recovery_pid=$!
+kill -0 "$recovery_pid"
+
+multipass stop node2
+```
+
+执行 node1/PostgreSQL 子场景时，必须在单独授权后把模板中的 `target_node`、`recovery_log`、watchdog、`multipass stop` 和下方人工 `multipass start` 目标五处同时改为 `node1`；不得混用两个节点名。
+
+达到预期故障观察门槛后立即恢复，不等待 watchdog 到期：
+
+```bash
+multipass start node2
+kill "$recovery_pid" 2>/dev/null || true
+wait "$recovery_pid" 2>/dev/null || true
+trap - EXIT INT TERM HUP
+unlink "$recovery_log"
+```
+
+node2/Redis 场景由 node1 manager 观察。node2 入口不可达是预期结果；node1/node3 必须保持 quorum 与唯一 Leader，Sub2API/Caddy 为 `2/3`、Redis 为 `0/1` 且不漂移、PostgreSQL 为 `1/1`；两个存活应用 `/health=200`、`/ready` 在约 3 秒内返回 503，HTTPS 使用已加载证书返回 503。期间不得重启存活 Caddy。恢复后的 node2 Caddy 可在 Redis 已恢复后读取共享 storage，但不能据此宣称“Redis 持续不可用时 Caddy 冷启动”已通过。
+
+node1/PostgreSQL 场景开始前，必须先证明 `multipass exec node2 -- docker node ls` 可用，因为 node1 上的既有 Docker context 和 GoTask 入口在故障期不可用。node1 停止后，node2/node3 必须在 30 秒内形成 quorum 和唯一 Leader；PostgreSQL 为 `0/1` 且不漂移，Redis 为 `1/1`，两个存活应用 `/health=200`、`/ready` 在约 3 秒内返回 503。node1 恢复后不要求重新成为 Leader。
+
+每个场景恢复后，task/container ID 允许变化，但 Swarm node ID、service spec、placement、volume 名称/driver/Mountpoint 和数据身份必须不变。数据 service 应在节点启动后 120 秒内 healthy，完整集群应在 300 秒内恢复三个 manager Ready/Reachable、唯一 Leader、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`、三个入口 200，并最终通过 `release:verify ENV=local`。
+
+任一第二 manager 异常、无唯一 Leader、数据 task 漂移、新空 volume、数据身份变化、存活应用 `/health` 非 200、`/ready` 挂起或误报 200、watchdog 失效，或恢复需要改 spec/Secret/Config/label 时，立即启动目标节点并终止演练。失败后只保留证据，不执行 stack deploy、service force-update、重建 volume、重复 bootstrap、重新加入 Swarm 或第二个场景。
+
+该流程只验证普通停止的受控关机和原虚拟磁盘恢复，不覆盖 `multipass stop --force`、断电、宿主机崩溃、磁盘损坏、VM 删除/重建、跨节点/备份恢复、自动故障转移、DNS 摘除、生产 HA 或 RPO/RTO。
 
 ## 8. 新增 Node4：增加第 4 个 Sub2API 副本
 

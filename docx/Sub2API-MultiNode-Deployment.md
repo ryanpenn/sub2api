@@ -1,6 +1,6 @@
 # Sub2API 多节点部署方案
 
-> 状态：本地验证方案设计与阶段 0 已完成，G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 中断恢复与 G4-B2b-2a PostgreSQL 容器暂停/恢复均已通过；`ext.3` 已在三个节点运行，数据节点及资源/迁移故障仍未授权；生产容量细项与生产监控目标按生产准入门槛后续补齐
+> 状态：本地验证方案设计与阶段 0 已完成，G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 中断恢复与 G4-B2b-2a PostgreSQL 容器暂停/恢复均已通过；`ext.3` 已在三个节点运行；G4-B2b-2b 数据节点故障只读执行前审查已完成，实际数据节点及资源/迁移故障仍未授权；生产容量细项与生产监控目标按生产准入门槛后续补齐
 > 创建日期：2026-07-26  
 > 更新日期：2026-07-27
 > 节点信息来源：[`Multipass-Nodes.md`](./Multipass-Nodes.md)  
@@ -454,14 +454,14 @@ sudo killall -HUP mDNSResponder
 - 两个数据服务均不做副本、自动故障转移或跨节点存储，本地结果不作为 HA 证明；
 - 全部 Sub2API 副本通过内部 overlay network 和稳定 service name 访问；
 - PostgreSQL/Redis 不通过测试入口对外公开；
-- 数据目录使用明确的宿主机路径，并通过 placement 固定到具有该数据目录的节点；
+- 数据目录使用 Stack-scoped Docker local named volume，并通过唯一 placement 固定到原节点；恢复验收必须同时核对 volume 名称、driver、Mountpoint 和数据身份，不能只凭 service `1/1` 或 `/ready=200`；
 - 不允许节点故障后服务漂移到空目录并以“新库”启动；
 - 保留应用启动时的现有 migration；三个副本可以同时启动，但 migration runner 必须通过固定 ID 的 PostgreSQL session advisory lock 串行执行 SQL，不能绕过该锁；
 - 等待副本获锁后必须重新读取 `schema_migrations` 并核对 checksum，已成功应用的文件直接跳过；迁移失败的副本不得进入 ready；
 - `AUTO_SETUP` 与 migration 分开治理：只有一个临时 bootstrap 实例执行 setup；三个正式副本仍各自在正常启动路径竞争 migration advisory lock；
 - 三个 Sub2API 副本使用统一连接池预算，数据库/Redis 总连接数按副本数计算。
 
-生产初期沿用“数据服务在同一 Swarm 内、单实例、placement 绑定本地持久化目录”的形态，但目标平台为 AMD64，且 PostgreSQL/Redis 所在节点仍同时运行本机 Caddy 和一个 Sub2API task。PostgreSQL 固定在唯一 `postgres=true` 节点，Redis 固定在另一个唯一 `redis=true` 节点，第三个节点不放数据服务。后期迁出时只改变数据位置和连接端点，不改变三个 Sub2API 副本共享同一 PostgreSQL/Redis 的语义，也不为迁出新增应用实体或业务功能。
+生产初期沿用“数据服务在同一 Swarm 内、单实例、placement 绑定节点本地 named volume”的形态，但目标平台为 AMD64，且 PostgreSQL/Redis 所在节点仍同时运行本机 Caddy 和一个 Sub2API task。PostgreSQL 固定在唯一 `postgres=true` 节点，Redis 固定在另一个唯一 `redis=true` 节点，第三个节点不放数据服务。后期迁出时只改变数据位置和连接端点，不改变三个 Sub2API 副本共享同一 PostgreSQL/Redis 的语义，也不为迁出新增应用实体或业务功能。
 
 生产初期故障语义已确认：PostgreSQL 或 Redis 所在节点失联、磁盘不可用或服务无法读取原持久化目录时，Swarm 不得把该数据 service 调度到其他节点并创建空库/空 Redis。service 保持失败，全部依赖该服务的 Sub2API 副本必须 `/ready=503`；Caddy 对本机未就绪 upstream 返回失败，DNS 记录保持不变。第一期只能由人工修复原节点/原存储；第二期启用并演练集群外备份后，才允许按手册恢复到明确的新目标并修改 placement。两阶段均不做自动故障转移。
 
@@ -1351,7 +1351,7 @@ task ops:node-status
 - PostgreSQL/Redis 中断时不会返回误导性的健康状态；
 - PostgreSQL 只在 `node1`、Redis 只在 `node2` 运行，节点重启后重新挂载原数据目录，不会漂移到其他节点空目录启动；
 - 生产初期只有一个节点带 `postgres=true`、另一个节点带 `redis=true`，两个标签不在同一节点；第三节点没有数据服务标签，三个节点仍各自只有一个 Sub2API/Caddy task；
-- 生产初期 PostgreSQL/Redis 任一节点故障后，数据 service 保持失败且未在其他节点以空目录启动；三个 Sub2API `/ready` 均返回 503，DNS 记录未自动摘除；第一期人工修复原节点/原存储的流程可执行，备份恢复流程只在第二期启用集群外备份后验收；
+- 生产初期 PostgreSQL/Redis 任一节点故障后，数据 service 保持失败且未在其他节点以空目录启动；故障节点的入口不可达，另外两个 Sub2API `/health=200`、`/ready=503`，DNS 记录未自动摘除。第一期只验证普通受控关机后人工启动原节点并重新使用原 local volume，不使用强制断电；备份恢复流程只在第二期启用集群外备份后验收；
 - 第一期确认上游现有 S3 配置为空、定时 S3 备份禁用，未增加 S3 接口、实体、SDK、`extends` 修补或备份 service；本地持久化验证不得记为跨节点灾难恢复通过；
 - 第二期启用集群外备份后，PostgreSQL 从 physical base backup + WAL 恢复的实测结果满足 `RPO<=15m`、`RTO<=4h`，并完成指定时间点的数据一致性和应用读写校验；
 - 第二期启用集群外备份后，Redis 从集群外 RDB 恢复的实测结果满足 `RPO<=1h`、`RTO<=4h`，AOF `everysec` 已启用，恢复后的 Sub2API key namespace 与 Caddy 证书体系均通过检查；
@@ -1505,7 +1505,7 @@ task ops:node-status
 32. **本地可观测性（已确认）**：第一期不部署 Prometheus/Grafana/Loki 等常驻组件；使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据和 PostgreSQL/Redis 原生查询，以 `request_id + node + replica` 关联链路，由 GoTask 提供只读状态、日志和采样命令并形成验收记录。生产指标后端、日志集中化、保留期、告警阈值、值班和升级流程纳入生产准入前的“容量与可观测性补充方案”，当前不预设技术选型。
 33. **Swarm 节点角色（已确认）**：`node1`、`node2`、`node3` 固定作为 manager 并保留 worker 能力，以维持三个 manager 的 quorum 并演练单 manager 故障；后续容量扩展节点全部只作为 worker 加入，不把 manager 扩展到 3 个以上。原 manager 永久失效时从合格 worker 中晋升替代节点，只恢复到三个 manager。
 34. **实施产物（已完成 G3）**：ARM64/AMD64 GHCR 平台 digest、本地 ARM64 source/node image ID 与归档 SHA-256 均已回填；发布 tag、fork commit、构建输入、镜像身份和 workflow run 可追溯。
-35. **当前授权**：本地设计与 G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 暂停/恢复及 G4-B2b-2a PostgreSQL 容器暂停/恢复已完成并通过。原 `ext.2` 现场 readiness 失败已严格在 `backend/extends/lifecycle/manager.go` 与 `manager_test.go` 内完成单 in-flight probe、caller 硬超时和测试；独立授权的候选构建、归档分发、活动清单切换、`ext.3` 三副本受控滚动、同场景复测及 annotated tag 闭环均已完成。当前未授权上传 GHCR、执行数据节点中断、OOM、受控 migration 失败或生产变更。Caddy 从正常共享 storage 重启恢复、Redis 短时中断期间既有证书服务均已验证，但不能外推为 Redis 进程/持久化恢复、Redis 不可用时 Caddy 冷启动或证书续期协调已通过；PostgreSQL 结果也不能外推为进程、volume、节点或备份恢复已通过。
+35. **当前授权**：本地设计与 G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 暂停/恢复及 G4-B2b-2a PostgreSQL 容器暂停/恢复已完成并通过。原 `ext.2` 现场 readiness 失败已严格在 `backend/extends/lifecycle/manager.go` 与 `manager_test.go` 内完成单 in-flight probe、caller 硬超时和测试；独立授权的候选构建、归档分发、活动清单切换、`ext.3` 三副本受控滚动、同场景复测及 annotated tag 闭环均已完成。`G4-B2b-2b-review` 已只读核对 node2/Redis 与 node1/PostgreSQL 的独立执行顺序、宿主机恢复保护、故障期 manager 观察入口、local volume/数据身份和验收停止门槛；不代表实际故障授权。当前未授权上传 GHCR、执行 `G4-B2b-2b-1/G4-B2b-2b-2`、OOM、受控 migration 失败或生产变更。Caddy 从正常共享 storage 重启恢复、Redis 短时中断期间既有证书服务均已验证；未来 node2 恢复时本机 Caddy 从已恢复 Redis storage 启动可纳入该场景，但不能外推为 Redis 持续不可用时 Caddy 冷启动或证书续期协调已通过。PostgreSQL 结果也不能外推为强制断电、磁盘损坏、跨节点或备份恢复已通过。
 
 ## 10. 计划产物
 
@@ -1585,6 +1585,7 @@ task ops:node-status
 | 2026-07-27 | 完成 G4-B2b-2a-candidate 本地 ARM64 候选 | 本机构建与身份核验已通过，未部署 | `593a261d7` 审核无阻断；版本提交 `6c859d2d8` 将组合版本提升为 `0.1.165-ext.3`。本地镜像 source ID 为 `sha256:03e01bbd24c1818ac1f8ad9ec6413969ed9e6e69a524cb2795f993ed756da6aa`，归档 SHA-256 为 `43d69c5fa76eb0f3c809a97251f2eee3477c04cb5324d6449fea6b6bb67b1f6c`，二进制 SHA-256 为 `c6d73fc00d060cf1d04ae0ffc3f76796b1c679bd14205692ad3f73c63e4e8b65`；未创建 tag、上传、分发或修改活动 `ext.2` 清单 |
 | 2026-07-27 | 完成 G4-B2b-2a-deploy-retest 三节点部署与现场复测 | 已通过（保留故障边界） | 活动清单提交 `3608d6c7b` 固定 `ext.3` 三重镜像身份，三节点 node image ID 均为 `sha256:fd867fc19da56a25bae98930d2186159f3650a83cc5cefb99164ae4951f01a6f`；受控滚动后三个 task healthy、逐节点 `/ready` 和 HTTPS 为 200。PostgreSQL 容器暂停约 25.09 秒期间九次直连 `/ready` 均在约 2.0015–2.0653 秒返回 503，恢复后 task/container/volume、`schema_migrations=236/236/0` 均不变且 `release:verify` 通过。只覆盖同一容器暂停/恢复；未创建 Git tag、上传 GHCR 或执行其他故障 |
 | 2026-07-27 | 完成 G4-B2b-2a-tag ext.3 标签闭环 | 已完成 | annotated tag `v0.1.165-ext.3` 的 tag object 为 `de000a7f6ed506b76b10384da8301dc18c485637`，peel 后固定到版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`；本地与远端核验一致。只推送 Git tag，未触发仅支持 `workflow_dispatch` 的 release workflow，未上传 GHCR、创建 GitHub Release、修改运行态或执行其他故障 |
+| 2026-07-27 | 完成 G4-B2b-2b-review 数据节点故障执行前审查 | 已通过审查，实际故障未授权 | 修正“停止节点后三个 `/ready=503`”为“故障节点不可达、另外两个 `/health=200` 与 `/ready=503`”；实际场景拆为先 node2/Redis、完整恢复后再 node1/PostgreSQL。固定普通 `multipass stop`、60 秒宿主机 watchdog + trap、30 秒 quorum、120 秒数据服务及 300 秒完整恢复门槛；记录 local volume 与 PostgreSQL system identifier/Redis persistence/Caddy storage 身份。未停止节点、服务或修改运行态 |
 | 2026-07-26 | WebSocket 采用进程内登记与到期重连 | 已确认第一期最小范围 | draining 拒绝新 upgrade；已有连接可继续到窗口结束并在到期发送 `1012 Service Restart`；第一期不识别当前/new turn，不迁移连接，不使用 Redis 或新增实体 |
 | 2026-07-26 | WebSocket 连接绑定状态保持进程内 | 已确认 | 重连建立新连接，不跨副本续接未完成 turn；仅确需跨请求/副本读取的状态复用现有 Redis，不新增实体 |
 | 2026-07-26 | 保留应用启动 migration 并由 PostgreSQL 锁串行化 | 已确认 | 不新增 migration Job/ext；三个副本可同时启动但不能同时执行 SQL；失败或超时副本不进入 ready，具体超时、`*_notx.sql` 恢复和 forward-only 回滚门槛见第 6.4.1 节 |

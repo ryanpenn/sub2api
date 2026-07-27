@@ -133,3 +133,17 @@ multipass exec node3 -- <command>
 - PostgreSQL task `b5ysani4aye7gl2gbpxwv03v6`、容器 `81c5e2921ae8`、volume `sub2api-local_postgres_data`、三个 Sub2API task 和三个 Caddy task 均未替换；`schema_migrations` 保持 `236/236/0`，近 10 分钟 Sub2API panic/fatal 为 0，最终 `release:verify ENV=local` 通过。
 
 因此 `G4-B2b-2a` 只在“同一 PostgreSQL 容器短时暂停/恢复”的范围内通过；不覆盖 PostgreSQL 进程重启、volume 重挂载、数据节点停止、备份恢复、OOM、migration 失败或生产故障域。
+
+## G4-B2b-2b 数据节点故障执行前只读基线
+
+2026-07-27 已完成只读审查，没有停止节点或服务：
+
+- node1/node2/node3 均为 `Ready/Active` manager，node1 当前为 Leader，quorum 为 2；已确认 node2 可通过 `multipass exec node2 -- docker node ls` 读取 Swarm，因此 node1 停止期间不依赖指向 node1 的 `sub2api-local` Docker context；
+- PostgreSQL 当前 task/container 为 `t4ns8vvywx85`/`4a50cd8f4a12`，只允许位于 node1。`sub2api-local_postgres_data` 为 local volume，创建时间 `2026-07-27T00:28:23+08:00`，Mountpoint `/var/lib/docker/volumes/sub2api-local_postgres_data/_data`，device/inode `2049/302196`；`system_identifier=7666874411637911585`，migration 为 `236/236/0/0`（总数/唯一 filename/null checksum/空 checksum）；
+- Redis 当前 task/container 为 `qfhw450m6d8e`/`17de281ecc86`，只允许位于 node2。`sub2api-local_redis_data` 为 local volume，创建时间 `2026-07-27T00:14:54+08:00`，Mountpoint `/var/lib/docker/volumes/sub2api-local_redis_data/_data`，device/inode `2049/299241`；`PONG`、RDB/AOF 均正常，DB 1 为 15 个 Caddy storage key，key name set SHA-256 为 `8c59bdb6c96e954ab0b28d80c55c18c09e7ad3ed57992d7231c7a67c91a72ca8`；
+- 三个直连 `/health`、`/ready` 均为 200；三个叶证书 serial/指纹仍为 `6A756405F963CC3B7D3310DCAF348F5B` / `40:FD:12:CF:C3:3C:C4:B8:45:80:75:AD:1F:09:91:C1:4E:A2:5D:FA:50:C5:F1:C2:3E:5C:C1:D5:A6:F3:15:7A`；`release:verify ENV=local` 通过；
+- 已确认 `/usr/local/bin/multipass` 与 `/usr/bin/nohup` 可用，未来每个场景都必须在停止前建立 60 秒 auto-start watchdog 与退出/信号恢复 trap。
+
+审查把实际故障拆为 `G4-B2b-2b-1` node2/Redis 与 `G4-B2b-2b-2` node1/PostgreSQL，均未授权。先执行 node2，完整恢复后才能重新审核 node1。停止节点后该节点入口应不可达，不能把它误判为 `/ready=503`；正确门槛是另外两个应用 `/health=200`、`/ready=503`，两个 manager 保持 quorum/唯一 Leader，数据 service 为 `0/1` 且不漂移。完整命令、自动恢复和停止门槛见 [`GoTask-runbook.md`](./GoTask-runbook.md) 第 7.4 节。
+
+该审查只为普通受控关机/原虚拟磁盘恢复做准备，不覆盖 `--force`、断电、宿主机崩溃、磁盘损坏、VM 重建、跨节点/备份恢复、自动故障转移、DNS 摘除、生产 HA 或 RPO/RTO。
