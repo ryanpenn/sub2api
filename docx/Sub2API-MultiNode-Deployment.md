@@ -1,10 +1,10 @@
 # Sub2API 多节点部署方案
 
-> 状态：本地验证方案设计与阶段 0 已完成，G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集与 G4-B2b-1 Redis 中断恢复已通过；G4-B2b-2a PostgreSQL 暂停/恢复已执行但 readiness 门槛未通过，数据节点及资源/迁移故障仍未授权；生产容量细项与生产监控目标按生产准入门槛后续补齐
+> 状态：本地验证方案设计与阶段 0 已完成，G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集与 G4-B2b-1 Redis 中断恢复已通过；G4-B2b-2a PostgreSQL 暂停/恢复已执行但 readiness 门槛未通过，其仓库最小修补与测试已完成，候选发布部署和现场复测尚未授权；数据节点及资源/迁移故障仍未授权；生产容量细项与生产监控目标按生产准入门槛后续补齐
 > 创建日期：2026-07-26  
 > 更新日期：2026-07-27
 > 节点信息来源：[`Multipass-Nodes.md`](./Multipass-Nodes.md)  
-> 当前边界：G1 已生成发布链和 `deploy/cluster` 骨架，G2 已发布 private GHCR 首版双架构制品，G3 已完成三 manager、共享 PostgreSQL/Redis、一次性 bootstrap 与 node1 单副本 TLS 基线；阶段 3 多实例前置收敛及 `v0.1.165-ext.2` 本地候选验证已通过，G4-A 已把正式 Sub2API/Caddy 扩展为三节点 `3/3`，S4-B 已完成非破坏性专项，G4-B1/S4-C 已完成受控滚动、失败暂停、旧清单回滚及模型价格 Config 回滚，G4-B2a/S4-D 已完成单 task、单节点与 Caddy 重启恢复，G4-B2b-1 已完成 Redis 暂停/恢复；G4-B2b-2a PostgreSQL 暂停/恢复暴露直连 `/ready` 超时偏差，当前不重复故障注入、不执行数据节点中断、OOM、受控 migration 失败、生产部署、数据迁移或切流
+> 当前边界：G1 已生成发布链和 `deploy/cluster` 骨架，G2 已发布 private GHCR 首版双架构制品，G3 已完成三 manager、共享 PostgreSQL/Redis、一次性 bootstrap 与 node1 单副本 TLS 基线；阶段 3 多实例前置收敛及 `v0.1.165-ext.2` 本地候选验证已通过，G4-A 已把正式 Sub2API/Caddy 扩展为三节点 `3/3`，S4-B 已完成非破坏性专项，G4-B1/S4-C 已完成受控滚动、失败暂停、旧清单回滚及模型价格 Config 回滚，G4-B2a/S4-D 已完成单 task、单节点与 Caddy 重启恢复，G4-B2b-1 已完成 Redis 暂停/恢复；G4-B2b-2a PostgreSQL 暂停/恢复暴露直连 `/ready` 超时偏差，`backend/extends/lifecycle` 两文件最小修补与测试已完成，但 `backend/extends/VERSION` 和正式三副本仍为 `ext.2`，当前不构建或部署候选、不重复故障注入、不执行数据节点中断、OOM、受控 migration 失败、生产部署、数据迁移或切流
 
 ## 1. 文档目的
 
@@ -1505,7 +1505,7 @@ task ops:node-status
 32. **本地可观测性（已确认）**：第一期不部署 Prometheus/Grafana/Loki 等常驻组件；使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据和 PostgreSQL/Redis 原生查询，以 `request_id + node + replica` 关联链路，由 GoTask 提供只读状态、日志和采样命令并形成验收记录。生产指标后端、日志集中化、保留期、告警阈值、值班和升级流程纳入生产准入前的“容量与可观测性补充方案”，当前不预设技术选型。
 33. **Swarm 节点角色（已确认）**：`node1`、`node2`、`node3` 固定作为 manager 并保留 worker 能力，以维持三个 manager 的 quorum 并演练单 manager 故障；后续容量扩展节点全部只作为 worker 加入，不把 manager 扩展到 3 个以上。原 manager 永久失效时从合格 worker 中晋升替代节点，只恢复到三个 manager。
 34. **实施产物（已完成 G3）**：ARM64/AMD64 GHCR 平台 digest、本地 ARM64 source/node image ID 与归档 SHA-256 均已回填；发布 tag、fork commit、构建输入、镜像身份和 workflow run 可追溯。
-35. **当前授权**：本地设计与 G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集和 G4-B2b-1 Redis 暂停/恢复已完成并通过；G4-B2b-2a PostgreSQL 暂停/恢复已执行但直连 `/ready` 超过 4 秒无响应，当前门槛未通过。未授权前不得修改运行时代码、重复 PostgreSQL 故障注入，或执行数据节点中断、OOM、受控 migration 失败。Caddy 从正常共享 storage 重启恢复、Redis 短时中断期间既有证书服务均已验证，但不能外推为 Redis 进程/持久化恢复、Redis 不可用时 Caddy 冷启动或证书续期协调已通过。
+35. **当前授权**：本地设计与 G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集和 G4-B2b-1 Redis 暂停/恢复已完成并通过；G4-B2b-2a PostgreSQL 暂停/恢复已执行但直连 `/ready` 超过 4 秒无响应，当前门槛未通过。获授权的 `G4-B2b-2a-fix` 已严格在 `backend/extends/lifecycle/manager.go` 与 `manager_test.go` 内完成单 in-flight probe、caller 硬超时和测试；它不授权 ext 版本提升、候选构建、部署或现场复测。获得后续独立授权前不得执行这些动作，也不得执行数据节点中断、OOM、受控 migration 失败。Caddy 从正常共享 storage 重启恢复、Redis 短时中断期间既有证书服务均已验证，但不能外推为 Redis 进程/持久化恢复、Redis 不可用时 Caddy 冷启动或证书续期协调已通过。
 
 ## 10. 计划产物
 
@@ -1581,6 +1581,7 @@ task ops:node-status
 | 2026-07-27 | 完成 G4-B2a/S4-D 低风险故障子集 | 已通过（保留剩余授权边界） | 单 Sub2API task、node3 manager 与单 Caddy task 均按 Swarm 期望恢复；故障期间至少两个入口持续可用且 global service 未在其他节点补第二副本；Caddy 重启前后证书 serial/指纹和 Redis storage key 集合一致且未观察到重复签发。该记录形成时 Redis/PostgreSQL 中断、OOM、受控 migration 失败及续期协调尚未授权或验证 |
 | 2026-07-27 | 完成 G4-B2b-1 Redis 暂停/恢复 | 已通过（保留剩余授权边界） | 同一 Redis 容器暂停约 25 秒时，三个应用 `/health=200`、`/ready=503`，HTTPS TLS 仍可握手但入口返回 503；恢复后 Redis `PONG`、三个入口和 Docker health 依次恢复，task/container 未替换，证书与 Caddy storage key 集合不变。未验证 Redis 进程/AOF/数据卷恢复、Redis 不可用时 Caddy 冷启动、真实 OAuth 事务或证书续期 |
 | 2026-07-27 | 执行 G4-B2b-2a PostgreSQL 暂停/恢复 | 未通过 readiness 门槛，环境已恢复 | 同一 PostgreSQL 容器暂停约 25 秒时，三个应用 `/health=200`，但直连 `/ready` 连续超过 4 秒无响应；Caddy active health 最终让 HTTPS 入口 fail-closed 为 503。恢复后 task/container/volume 与 `schema_migrations=236/236/0` 均不变，`release:verify` 通过。需先审核最小硬超时修补，不得把本次执行记为通过 |
+| 2026-07-27 | 完成 G4-B2b-2a-fix 仓库最小修补 | 代码与测试已通过，现场门槛仍待复测 | 代码提交 `593a261d7` 仅修改 `backend/extends/lifecycle/manager.go` 与 `manager_test.go`：同一时刻只运行一个 PostgreSQL probe，每个 readiness caller 按自己的 deadline 返回，共享 probe 使用独立 2 秒 context；阻塞 pinger 并发/恢复测试、race、vet、相关包及全量 Go 测试通过。`extends/VERSION`、镜像和 Multipass 运行态均未改变，不能据此把 G4-B2b-2a 标记通过 |
 | 2026-07-26 | WebSocket 采用进程内登记与到期重连 | 已确认第一期最小范围 | draining 拒绝新 upgrade；已有连接可继续到窗口结束并在到期发送 `1012 Service Restart`；第一期不识别当前/new turn，不迁移连接，不使用 Redis 或新增实体 |
 | 2026-07-26 | WebSocket 连接绑定状态保持进程内 | 已确认 | 重连建立新连接，不跨副本续接未完成 turn；仅确需跨请求/副本读取的状态复用现有 Redis，不新增实体 |
 | 2026-07-26 | 保留应用启动 migration 并由 PostgreSQL 锁串行化 | 已确认 | 不新增 migration Job/ext；三个副本可同时启动但不能同时执行 SQL；失败或超时副本不进入 ready，具体超时、`*_notx.sql` 恢复和 forward-only 回滚门槛见第 6.4.1 节 |
