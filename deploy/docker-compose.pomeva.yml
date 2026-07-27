@@ -1,0 +1,21 @@
+# Server-specific network overlay for the pomeva.cn deployment.
+#
+# Keep this file separate from the generic Compose templates so ordinary
+# Sub2API installations do not depend on the external pomeva-net network.
+# On server-jp-dev, install it as deploy/docker-compose.override.yml next to
+# the existing docker-compose.yml. Docker Compose will then merge it
+# automatically for future up/recreate operations.
+
+services:
+  sub2api:
+    networks:
+      - pomeva-net
+
+  postgres:
+    networks:
+      - pomeva-net
+
+networks:
+  pomeva-net:
+    external: true
+    name: pomeva-net

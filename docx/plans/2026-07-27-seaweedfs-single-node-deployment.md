@@ -12,7 +12,8 @@
 
 - 本文已按用户确认的三个决定修订，但仍是实施前审核稿。收到明确“开始部署”指令前，不得安装软件、拉取镜像、创建配置、重启容器、修改 Caddy/DNS 或写入业务数据。
 - `sss.pomeva.cn` 的 DNS 解析由人工在现有 DNS 服务商控制台完成；部署执行者只负责提供记录值并做只读解析验证，不登录 DNS 控制台、不代替人工创建或修改记录。
-- 当前工作只允许新增本方案文档，不修改 Sub2API 源码。
+- 当前工作允许新增服务器专用 Sub2API Compose overlay 并修改本方案文档，但不修改 Sub2API 业务源码或通用 Compose 模板；进入 SeaweedFS 实施前，将已审核的 `deploy/docker-compose.pomeva.yml` 作为服务器 `/home/ubuntu/sub2api/deploy/docker-compose.override.yml` 安装并通过只读渲染验证。服务器基础 Compose 基于 bind-mount/local 变体且包含镜像 digest 等运行态定制，禁止整体覆盖。
+- 服务器后续管理 Sub2API 必须在 `/home/ubuntu/sub2api/deploy` 中使用不带 `-f` 的 `docker compose`/`docker-compose`，让 `docker-compose.override.yml` 自动合并；如果必须使用 `-f` 或自定义 `COMPOSE_FILE`，必须同时显式包含基础文件和该 override，否则停止操作。
 - `43.165.171.148` 是现有业务机。任何实施必须先验证现有 `sub2api`、PostgreSQL、Redis、Notifier 和 Caddy 的健康状态，并在变更后复验。
 - SeaweedFS 首次部署必须复用现有 `sub2api-postgres` 容器，但只允许新建独立数据库 `seaweedfs` 和独立登录账号 `seaweedfs`；不得使用现有 `sub2api` 数据库、schema 或应用账号保存 SeaweedFS 元数据。
 - Filer Store 固定为 `postgres2`，`leveldb2` 必须显式禁用。数据库密码必须保存在 root-only secret 中，不得出现在 Compose、Git、命令行参数或普通日志中。
@@ -43,7 +44,7 @@
 | Docker | Engine 29.5.2 / Compose 5.1.4 | 可使用 Compose V2/5 语法 |
 | 现有容器 | Caddy、Notifier、Sub2API、PostgreSQL、Redis | 需要保护现有栈 |
 | PostgreSQL | `sub2api-postgres` / PostgreSQL 18.4 / `postgres:18-alpine` | 首期复用容器，新建独立 `seaweedfs` 数据库与账号 |
-| PostgreSQL 网络 | `sub2api-postgres` 已加入 `pomeva-net` | Filer 加入同一网络后使用 `sub2api-postgres:5432` |
+| PostgreSQL 网络 | `sub2api-postgres` 运行态已加入 `pomeva-net`；仓库新增服务器专用 Compose overlay | Filer 加入同一网络后使用 `sub2api-postgres:5432`；overlay 安装为自动合并的 `docker-compose.override.yml` 后，容器重建不会丢失该网络 |
 | PostgreSQL 连接 | `max_connections=100`，盘点时约 19 条连接 | 单 Filer 池限制为最多 10 条；扩容时重新核算总连接数 |
 | SeaweedFS 端口 | `8333/8888/9333/19333/18080/18888/23646/33646` 均未监听 | 无现存端口冲突 |
 | 防火墙 | UFW inactive | 依靠 loopback 绑定、Docker 网络和云安全组缩小暴露面 |
@@ -68,7 +69,11 @@
 - **首期容量策略：** SeaweedFS 使用 1 GiB volume、最多 100 个 volume，并在共享根文件系统可用空间低于 40 GiB 时停止继续分配。
 - **Filer Store：** 从首次部署起使用 `postgres2`；显式禁用 `leveldb2`，不存在已有 SeaweedFS 元数据的迁移步骤。
 - **数据库隔离：** 复用 `sub2api-postgres` 容器，只新建独立数据库 `seaweedfs` 和独立账号 `seaweedfs`；不复用 `sub2api` 数据库、schema、账号或密码。
+- **Compose 网络持久化：** 使用服务器专用 `deploy/docker-compose.pomeva.yml` overlay，让 `sub2api`、`postgres` 固定加入外部 `pomeva-net`；Redis 继续只使用内部 `sub2api-network`。通用 Compose 模板不依赖 `pomeva-net`，避免影响其他 Sub2API 部署。
+- **数据库半成功恢复：** 只有 `600 root:root` 的 v2 初始化 marker 中记录的实际 database/role OID 与当前 `seaweedfs` 对象逐一匹配时，才允许精确删除这两个对象并重新创建；未绑定 OID、OID 不匹配或任何未知来源同名对象必须停止并人工处理。禁止对 `sub2api` 数据库、账号、角色成员关系或数据执行删除、重授权、改密和迁移。
+- **Sub2API 后台回退：** Backup S3 或异步图片对象存储验收失败时，通过 Sub2API 管理后台关闭对应开关；用户决定不增加旧配置导出与自动恢复步骤。
 - **未来数据库迁移：** 扩容前可在停写窗口中使用 `pg_dump/pg_restore` 将完整 `seaweedfs` 数据库迁到 PostgreSQL 18 或更高版本的外部共享实例；不需要 `fs.meta.save/load` 进行存储驱动转换。
+- **已接受残余风险：** 用户决定不处理 SeaweedFS 4.40 `weed shell` 子命令可能输出 `error: ...` 但进程仍返回成功退出码的问题；本方案不新增该输出的显式拒绝逻辑，相关命令存在假阳性验收风险。
 
 ---
 
@@ -103,6 +108,8 @@ flowchart LR
 
 ### 3.1 实施时新增或修改
 
+- Create tracked deployment overlay: `deploy/docker-compose.pomeva.yml`（`sub2api`、`postgres` 持久加入外部 `pomeva-net`；Redis 不加入）
+- Install before implementation: `/home/ubuntu/sub2api/deploy/docker-compose.override.yml`（内容来自已审核 overlay；保留基础 Compose 的镜像 digest、bind mount、环境变量和全部运行态定制；安装后只渲染验证，不因网络声明单独重建现有容器）
 - Create: `/opt/seaweedfs/docker-compose.yml`
 - Create: `/etc/seaweedfs/filer.toml`
 - Create: `/etc/seaweedfs/postgres-password`（root-only，SeaweedFS 独立数据库账号密码）
@@ -131,6 +138,7 @@ flowchart LR
 **Files:**
 
 - Read only: `/home/ubuntu/sub2api/deploy/docker-compose.yml`
+- Create from reviewed overlay: `/home/ubuntu/sub2api/deploy/docker-compose.override.yml`
 - Read only: `/home/ubuntu/pomeva/services/caddy/Caddyfile`
 
 - [ ] **Step 1: 核对主机、时间与资源**
@@ -165,7 +173,38 @@ done
 
 Expected: 五个现有容器健康；SeaweedFS 端口均未占用；没有新的 OOM 证据。
 
-- [ ] **Step 3: 核对 PostgreSQL 版本、网络、连接余量和目标命名冲突**
+- [ ] **Step 3: 安装服务器专用 Compose 网络 overlay，但不重建容器**
+
+从包含本方案的本机仓库执行；先把已审核文件传到临时路径，再在服务器上拒绝覆盖任何内容不同的既有 override：
+
+```bash
+scp -o BatchMode=yes -o IdentitiesOnly=yes \
+  -i ~/.ssh/server-jp-dev_ed25519 \
+  sub2api-fork/deploy/docker-compose.pomeva.yml \
+  ubuntu@43.165.171.148:/tmp/sub2api-docker-compose.pomeva.yml
+
+ssh -o BatchMode=yes -o IdentitiesOnly=yes \
+  -i ~/.ssh/server-jp-dev_ed25519 ubuntu@43.165.171.148 <<'REMOTE'
+set -eu
+cd /home/ubuntu/sub2api/deploy
+candidate='/tmp/sub2api-docker-compose.pomeva.yml'
+target='docker-compose.override.yml'
+trap 'rm -f "$candidate"' EXIT
+
+if [ -e "$target" ] && ! cmp -s "$candidate" "$target"; then
+  echo 'Existing docker-compose.override.yml differs; refusing to overwrite' >&2
+  exit 1
+fi
+
+install -m 0644 "$candidate" "$target"
+sudo docker network inspect pomeva-net >/dev/null
+sudo docker compose config --quiet
+REMOTE
+```
+
+Expected: 新建或确认内容完全一致的 `docker-compose.override.yml`；没有执行 `docker compose up/restart/down`，现有容器不重建。以后在该目录执行不带 `-f` 的普通 `docker compose up` 时会自动合并 overlay；使用 `-f` 时必须显式同时传入 `-f docker-compose.yml -f docker-compose.override.yml`。
+
+- [ ] **Step 4: 核对 PostgreSQL 版本、网络、连接余量和目标命名冲突**
 
 只读取运行状态和系统目录，不读取或打印现有数据库密码：
 
@@ -174,6 +213,16 @@ test "$(sudo docker inspect --format '{{.State.Health.Status}}' sub2api-postgres
 sudo docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' \
   sub2api-postgres | grep -Fx pomeva-net
 
+cd /home/ubuntu/sub2api/deploy
+sudo docker network inspect pomeva-net >/dev/null
+sudo docker compose config --quiet
+sudo docker compose config --format json | jq -e '
+  .networks["pomeva-net"].external == true and
+  (.services.sub2api.networks | has("pomeva-net")) and
+  (.services.postgres.networks | has("pomeva-net")) and
+  (.services.redis.networks | has("pomeva-net") | not)
+' >/dev/null
+
 sudo docker exec -i -u postgres sub2api-postgres \
   psql -X -v ON_ERROR_STOP=1 -U sub2api -d postgres <<'SQL'
 SELECT current_setting('server_version') AS server_version;
@@ -181,21 +230,46 @@ SELECT current_setting('password_encryption') AS password_encryption;
 SELECT current_setting('max_connections')::int AS max_connections,
        count(*) AS current_connections
 FROM pg_stat_activity;
-SELECT datname FROM pg_database WHERE datname = 'seaweedfs';
-SELECT rolname FROM pg_roles WHERE rolname = 'seaweedfs';
+SELECT (EXISTS (SELECT 1 FROM pg_database WHERE datname = 'seaweedfs'))::int || '|' ||
+       (EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'seaweedfs'))::int AS target_state;
 SQL
+
+target_state="$(sudo docker exec -i -u postgres sub2api-postgres \
+  psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres \
+    -c "SELECT (EXISTS (SELECT 1 FROM pg_database WHERE datname='seaweedfs'))::int || '|' || (EXISTS (SELECT 1 FROM pg_roles WHERE rolname='seaweedfs'))::int;")"
+if [ "$target_state" != '0|0' ]; then
+  marker='/etc/seaweedfs/.postgres-init-in-progress'
+  sudo test "$(sudo stat -c '%a|%U|%G' "$marker" 2>/dev/null || true)" = '600|root|root'
+  sudo jq -e '.version == "seaweedfs-init-v2"' "$marker" >/dev/null
+
+  actual_role_oid="$(sudo docker exec -i -u postgres sub2api-postgres \
+    psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres \
+      -c "SELECT oid FROM pg_roles WHERE rolname='seaweedfs';")"
+  actual_database_oid="$(sudo docker exec -i -u postgres sub2api-postgres \
+    psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres \
+      -c "SELECT oid FROM pg_database WHERE datname='seaweedfs';")"
+  marker_role_oid="$(sudo jq -r '.role_oid // empty' "$marker")"
+  marker_database_oid="$(sudo jq -r '.database_oid // empty' "$marker")"
+
+  if [ -n "$actual_role_oid" ]; then
+    test "$marker_role_oid" = "$actual_role_oid"
+  fi
+  if [ -n "$actual_database_oid" ]; then
+    test "$marker_database_oid" = "$actual_database_oid"
+  fi
+fi
 ```
 
-Expected: PostgreSQL 为 `18.x`、密码加密为 `scram-sha-256`，`sub2api-postgres` 在 `pomeva-net`，最大连接数仍为 100 且有至少 20 条余量；首次部署时最后两条查询均返回 0 行。若 `seaweedfs` 数据库或账号已经存在，停止实施并先确认其来源，禁止覆盖或轮换未知账号密码。
+Expected: PostgreSQL 为 `18.x`、密码加密为 `scram-sha-256`；安装 overlay 后的 Compose 渲染结果和当前 `sub2api-postgres` 运行态都包含 `pomeva-net`；最大连接数仍为 100 且有至少 20 条余量。首次部署时 `target_state=0|0`。如果状态不是 `0|0`，只有 `600 root:root` 的 v2 marker 中记录的非空 role/database OID 与当前同名对象逐一相等时，才可进入 Task 3 的半成功清理；任一对象尚未绑定 OID、OID 不匹配、标记缺失或来源无法确认时必须停止并人工处理。
 
-- [ ] **Step 4: 执行上线门禁**
+- [ ] **Step 5: 执行上线门禁**
 
 停止实施并回报用户，如果出现任意条件：
 
 - `MemAvailable < 6 GiB`；
 - 根盘可用空间 `< 150 GiB`，不足以同时容纳当前业务、100 GiB 对象上限和 40 GiB 安全余量；
 - 任一现有业务容器处于 restarting/unhealthy；
-- `sub2api-postgres` 不是 PostgreSQL 18.x、`password_encryption` 不是 `scram-sha-256`、未加入 `pomeva-net`、剩余连接数少于 20，或已经存在来源不明的 `seaweedfs` 数据库/账号；
+- `sub2api-postgres` 不是 PostgreSQL 18.x、`password_encryption` 不是 `scram-sha-256`、运行态或生产 Compose 未持久加入 `pomeva-net`、剩余连接数少于 20，或已经存在没有本方案 root-only 标记的 `seaweedfs` 数据库/账号；
 - `sub2api` 在最近 30 分钟发生 OOM 或连续重启；
 - `8333/8888/9333/19333/18080/18888/23646/33646` 任一端口已被未知服务占用；
 - 块设备拓扑与当前基线不一致，或 `/srv/seaweedfs/volume` 不再落在 `/dev/vda2`。
@@ -267,11 +341,111 @@ sudo install -d -m 0750 -o root -g root /var/lib/seaweedfs/admin
 
 - [ ] **Step 2: 创建独立 PostgreSQL 密码、账号和数据库**
 
-密码使用 64 位十六进制随机值，只通过 stdin 送入 PostgreSQL；不进入命令行参数、Compose 或 shell history。SQL 会先对当前会话关闭 statement/duration logging，避免口令落入 PostgreSQL 普通日志：
+密码使用 64 位十六进制随机值，只通过 stdin 送入 PostgreSQL；不进入命令行参数、Compose 或 shell history。SQL 会先对当前会话关闭 statement/duration logging，避免口令落入 PostgreSQL 普通日志。首次执行前 Task 1 必须证明两个目标均不存在；中断后重试时，只有 root-only v2 marker 中记录的数据库/角色 OID 与当前同名对象精确匹配且权限结构符合预期，才删除并重新创建 `seaweedfs` 对象。对象在创建成功后立即把实际 OID 写入 marker；如果进程恰好在对象创建与 OID 落盘之间中断，该对象不具备自动删除授权，必须人工处理。保护对象 `sub2api` 的数据库、角色和成员关系指纹在操作前后必须完全一致：
 
 ```bash
 sudo bash -eu <<'SCRIPT'
 umask 077
+init_marker='/etc/seaweedfs/.postgres-init-in-progress'
+marker_tmp="${init_marker}.tmp"
+
+write_marker() {
+  jq -n \
+    --arg operation_id "$operation_id" \
+    --arg role_oid "$role_oid" \
+    --arg database_oid "$database_oid" \
+    '{
+      version: "seaweedfs-init-v2",
+      operation_id: $operation_id,
+      role_oid: ($role_oid | if . == "" then null else tonumber end),
+      database_oid: ($database_oid | if . == "" then null else tonumber end)
+    }' > "$marker_tmp"
+  chown root:root "$marker_tmp"
+  chmod 0600 "$marker_tmp"
+  mv -f "$marker_tmp" "$init_marker"
+}
+
+protected_before="$(docker exec -i -u postgres sub2api-postgres \
+  psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres <<'SQL'
+SELECT d.oid::text || '|' || r.oid::text
+FROM pg_database AS d
+CROSS JOIN pg_roles AS r
+WHERE d.datname='sub2api' AND r.rolname='sub2api';
+SELECT COALESCE(string_agg(
+         m.roleid::text || ':' || m.member::text || ':' || m.grantor::text || ':' ||
+         m.admin_option::text || ':' || m.inherit_option::text || ':' || m.set_option::text,
+         ',' ORDER BY m.roleid, m.member, m.grantor
+       ), 'none')
+FROM pg_auth_members AS m
+WHERE m.roleid=(SELECT oid FROM pg_roles WHERE rolname='sub2api')
+   OR m.member=(SELECT oid FROM pg_roles WHERE rolname='sub2api');
+SQL
+)"
+test -n "$protected_before"
+
+target_state="$(docker exec -i -u postgres sub2api-postgres \
+  psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres <<'SQL'
+SELECT (EXISTS (SELECT 1 FROM pg_database WHERE datname='seaweedfs'))::int || '|' ||
+       (EXISTS (SELECT 1 FROM pg_roles WHERE rolname='seaweedfs'))::int;
+SQL
+)"
+
+if [ "$target_state" != '0|0' ]; then
+  test "$(stat -c '%a|%U|%G' "$init_marker" 2>/dev/null || true)" = '600|root|root'
+  jq -e '.version == "seaweedfs-init-v2"' "$init_marker" >/dev/null
+
+  actual_role_oid="$(docker exec -i -u postgres sub2api-postgres \
+    psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres \
+      -c "SELECT oid FROM pg_roles WHERE rolname='seaweedfs';")"
+  actual_database_oid="$(docker exec -i -u postgres sub2api-postgres \
+    psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres \
+      -c "SELECT oid FROM pg_database WHERE datname='seaweedfs';")"
+  marker_role_oid="$(jq -r '.role_oid // empty' "$init_marker")"
+  marker_database_oid="$(jq -r '.database_oid // empty' "$init_marker")"
+
+  if [ -n "$actual_role_oid" ]; then
+    test -n "$marker_role_oid"
+    test "$marker_role_oid" = "$actual_role_oid"
+  fi
+  if [ -n "$actual_database_oid" ]; then
+    test -n "$marker_database_oid"
+    test "$marker_database_oid" = "$actual_database_oid"
+  fi
+
+  database_owner_oid="$(docker exec -i -u postgres sub2api-postgres \
+    psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres \
+      -c "SELECT datdba FROM pg_database WHERE datname='seaweedfs';")"
+  if [ -n "$database_owner_oid" ]; then
+    test -n "$actual_role_oid"
+    test "$database_owner_oid" = "$actual_role_oid"
+  fi
+
+  role_flags="$(docker exec -i -u postgres sub2api-postgres \
+    psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres \
+      -c "SELECT rolsuper::int || '|' || rolcreatedb::int || '|' || rolcreaterole::int || '|' || rolreplication::int || '|' || rolbypassrls::int FROM pg_roles WHERE rolname='seaweedfs';")"
+  if [ -n "$role_flags" ]; then
+    test "$role_flags" = '0|0|0|0|0'
+    target_memberships="$(docker exec -i -u postgres sub2api-postgres \
+      psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres \
+        -c "SELECT count(*) FROM pg_auth_members WHERE roleid=(SELECT oid FROM pg_roles WHERE rolname='seaweedfs') OR member=(SELECT oid FROM pg_roles WHERE rolname='seaweedfs');")"
+    test "$target_memberships" = '0'
+  fi
+
+  docker exec -i -u postgres sub2api-postgres \
+    psql -X -v ON_ERROR_STOP=1 -U sub2api -d postgres <<'SQL'
+SELECT pg_terminate_backend(pid)
+FROM pg_stat_activity
+WHERE datname='seaweedfs' AND pid <> pg_backend_pid();
+DROP DATABASE IF EXISTS seaweedfs WITH (FORCE);
+DROP ROLE IF EXISTS seaweedfs;
+SQL
+fi
+
+operation_id="$(openssl rand -hex 16)"
+role_oid=''
+database_oid=''
+write_marker
+
 openssl rand -hex 32 > /etc/seaweedfs/postgres-password
 chown root:root /etc/seaweedfs/postgres-password
 chmod 0600 /etc/seaweedfs/postgres-password
@@ -283,10 +457,28 @@ db_password="$(cat /etc/seaweedfs/postgres-password)"
   printf '%s\n' "SET log_min_duration_statement = -1;"
   printf '%s\n' "SET log_min_error_statement = 'panic';"
   printf '%s\n' "CREATE ROLE seaweedfs LOGIN PASSWORD '${db_password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;"
-  printf '%s\n' "CREATE DATABASE seaweedfs OWNER seaweedfs TEMPLATE template0;"
 } | docker exec -i -u postgres sub2api-postgres \
       psql -X -v ON_ERROR_STOP=1 -U sub2api -d postgres
 unset db_password
+
+role_oid="$(docker exec -i -u postgres sub2api-postgres \
+  psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres \
+    -c "SELECT oid FROM pg_roles WHERE rolname='seaweedfs';")"
+test -n "$role_oid"
+write_marker
+
+docker exec -i -u postgres sub2api-postgres \
+  psql -X -v ON_ERROR_STOP=1 -U sub2api -d postgres \
+    -c 'CREATE DATABASE seaweedfs OWNER seaweedfs TEMPLATE template0;'
+
+database_record="$(docker exec -i -u postgres sub2api-postgres \
+  psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres \
+    -c "SELECT oid::text || '|' || datdba::text FROM pg_database WHERE datname='seaweedfs';")"
+database_oid="${database_record%%|*}"
+database_owner_oid="${database_record#*|}"
+test -n "$database_oid"
+test "$database_owner_oid" = "$role_oid"
+write_marker
 
 docker exec -i -u postgres sub2api-postgres \
   psql -X -v ON_ERROR_STOP=1 -U sub2api -d seaweedfs <<'SQL'
@@ -294,6 +486,25 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 ALTER SCHEMA public OWNER TO seaweedfs;
 GRANT USAGE, CREATE ON SCHEMA public TO seaweedfs;
 SQL
+
+protected_after="$(docker exec -i -u postgres sub2api-postgres \
+  psql -XAt -v ON_ERROR_STOP=1 -U sub2api -d postgres <<'SQL'
+SELECT d.oid::text || '|' || r.oid::text
+FROM pg_database AS d
+CROSS JOIN pg_roles AS r
+WHERE d.datname='sub2api' AND r.rolname='sub2api';
+SELECT COALESCE(string_agg(
+         m.roleid::text || ':' || m.member::text || ':' || m.grantor::text || ':' ||
+         m.admin_option::text || ':' || m.inherit_option::text || ':' || m.set_option::text,
+         ',' ORDER BY m.roleid, m.member, m.grantor
+       ), 'none')
+FROM pg_auth_members AS m
+WHERE m.roleid=(SELECT oid FROM pg_roles WHERE rolname='sub2api')
+   OR m.member=(SELECT oid FROM pg_roles WHERE rolname='sub2api');
+SQL
+)"
+test "$protected_after" = "$protected_before"
+rm -f "$init_marker" "$marker_tmp"
 SCRIPT
 ```
 
@@ -312,7 +523,7 @@ FROM pg_roles WHERE rolname='seaweedfs';
 SQL
 ```
 
-Expected: 密码文件为 `600 root:root` 且非空；数据库 owner 为 `seaweedfs`；账号所有高权限字段均为 `false`。本步骤仅适用于 Task 1 已证明账号和数据库均不存在的首次部署，不得改写为自动 `ALTER ROLE ... PASSWORD`。
+Expected: 密码文件为 `600 root:root` 且非空；数据库 owner 为 `seaweedfs`；账号所有高权限字段均为 `false`；成功后初始化 marker 已删除。首次执行只接受 `0|0`；半成功重试要求 v2 marker 中每个已存在目标的实际 OID 完全匹配、`seaweedfs` 角色没有任何角色成员关系，并且只删除精确的 `seaweedfs` 数据库和账号后重新创建。未写入 OID 或 OID 不匹配时禁止自动删除。脚本没有 `DROP OWNED`、`REASSIGN OWNED`、`ALTER ROLE sub2api` 或 `DROP DATABASE sub2api`，并通过前后数据库/角色 OID及 `pg_auth_members` 指纹确认 `sub2api` 数据库、账号和用户组关系均未变化。
 
 - [ ] **Step 3: 写入 Filer Store 配置**
 
@@ -487,9 +698,11 @@ services:
       - -max=100
       - -minFreeSpace=40GiB
       - -index=leveldb
+      - -preStopSeconds=10
       - -compactionMBps=20
       - -maintenanceMBps=20
     restart: unless-stopped
+    stop_grace_period: 30s
     mem_limit: 1g
     mem_reservation: 256m
     cpus: "1.00"
@@ -764,7 +977,7 @@ Expected: index digest 为 `sha256:52194fba...a4602`，平台包含 `linux/amd64
 cd /opt/seaweedfs
 findmnt -T /srv/seaweedfs/volume -o SOURCE,FSTYPE,SIZE,AVAIL,TARGET
 test "$(findmnt -T /srv/seaweedfs/volume -n -o SOURCE)" = "/dev/vda2"
-sudo docker compose up -d
+sudo docker compose up -d --wait --wait-timeout 180
 sudo docker compose ps
 sudo docker compose logs --no-color filer | grep -F 'configured filer store to postgres2'
 ```
@@ -973,6 +1186,7 @@ SCRIPT
 
 cd /opt/seaweedfs
 sudo docker compose restart
+sudo docker compose up -d --wait --wait-timeout 180
 sudo docker compose ps
 
 sudo bash -eu <<'SCRIPT'
@@ -1039,8 +1253,6 @@ Expected: A 记录唯一目标为 `43.165.171.148`；如果主机没有可用公
 
 ```caddyfile
 sss.pomeva.cn {
-	import proxy_common
-
 	route {
 		@seaweedfs_admin_metrics path /admin/metrics
 		respond @seaweedfs_admin_metrics 404
@@ -1048,12 +1260,14 @@ sss.pomeva.cn {
 		@seaweedfs_admin path /admin /admin/*
 		handle @seaweedfs_admin {
 			reverse_proxy seaweedfs-admin:23646 {
+				import proxy_common
 				header_down Set-Cookie "(.*)" "$1; Secure"
 			}
 		}
 
 		handle {
 			reverse_proxy seaweedfs-s3:8333 {
+				import proxy_common
 				flush_interval -1
 			}
 		}
@@ -1075,14 +1289,36 @@ Expected: Caddy validate 和 reload 均成功，现有 `api.pomeva.cn` 健康检
 - [ ] **Step 5: 部署完成后通过公网 HTTPS 入口执行 S3 服务健康检查**
 
 ```bash
-status="$(curl --silent --show-error --output /dev/null \
-  --write-out '%{http_code}' \
-  https://sss.pomeva.cn/)"
+status=''
+attempt=0
+deadline=$((SECONDS + 180))
+while (( SECONDS < deadline )); do
+  attempt=$((attempt + 1))
+  remaining=$((deadline - SECONDS))
+  request_timeout=15
+  if (( remaining < request_timeout )); then
+    request_timeout=$remaining
+  fi
+  status="$(curl --silent --show-error --output /dev/null \
+    --connect-timeout 5 --max-time "$request_timeout" \
+    --write-out '%{http_code}' \
+    https://sss.pomeva.cn/ || true)"
+  if [ "$status" = "403" ]; then
+    printf 'SeaweedFS public S3 health: PASS (HTTP %s, attempt %s)\n' \
+      "$status" "$attempt"
+    break
+  fi
+  remaining=$((deadline - SECONDS))
+  if (( remaining > 10 )); then
+    sleep 10
+  elif (( remaining > 0 )); then
+    sleep "$remaining"
+  fi
+done
 test "$status" = "403"
-printf 'SeaweedFS public S3 health: PASS (HTTP %s)\n' "$status"
 ```
 
-Expected: `https://sss.pomeva.cn/` TLS 验证成功并返回 `403`。`403` 表示公网 HTTPS、Caddy、S3 Gateway 和鉴权链路均已连通；`200` 表示可能误开匿名访问，`404` 表示路由错误，`502` 表示 Caddy 无法访问 `seaweedfs-s3:8333`，TLS/连接错误则优先检查 DNS、安全组、80/443 和证书签发。
+Expected: 最多等待 180 秒供 Caddy 完成配置传播和 ACME 证书签发；`https://sss.pomeva.cn/` TLS 验证成功并返回 `403`。`403` 表示公网 HTTPS、Caddy、S3 Gateway 和鉴权链路均已连通；`200` 表示可能误开匿名访问，`404` 表示路由错误，`502` 表示 Caddy 无法访问 `seaweedfs-s3:8333`，TLS/连接错误则优先检查 DNS、安全组、80/443 和证书签发。
 
 - [ ] **Step 6: 验证 `/admin` 管理入口、登录跳转和 metrics 阻断**
 
@@ -1166,7 +1402,7 @@ Expected: path-style S3 操作和 5 分钟 presigned URL 均成功。
 
 `pomeva-objects` 保持私有；推荐对象 URL 描述 path-style 地址格式，不代表对象可匿名读取。浏览器或外部调用方下载对象时使用 presigned URL。
 
-- [ ] **Step 1: 使用 AWS CLI 验证上传、列举、下载链接和删除**
+- [ ] **Step 1: 使用服务器现有 boto3 验证上传、列举、下载链接和删除**
 
 以下示例在 SeaweedFS 主机执行，不打印 Access Key 或 Secret Key：
 
@@ -1176,21 +1412,50 @@ set -a
 . /etc/seaweedfs/sub2api-s3.env
 set +a
 
-S3_ENDPOINT='https://sss.pomeva.cn'
-aws_config="$(mktemp)"
-trap 'rm -f "$aws_config"' EXIT
-export AWS_CONFIG_FILE="$aws_config"
-aws configure set s3.addressing_style path
+python3 - <<'PY'
+import os
+import urllib.request
 
-aws --endpoint-url "$S3_ENDPOINT" s3 ls s3://pomeva-objects/
-aws --endpoint-url "$S3_ENDPOINT" s3 cp \
-  /etc/hostname s3://pomeva-objects/examples/hostname.txt
-aws --endpoint-url "$S3_ENDPOINT" s3api head-object \
-  --bucket pomeva-objects --key examples/hostname.txt
-aws --endpoint-url "$S3_ENDPOINT" s3 presign \
-  s3://pomeva-objects/examples/hostname.txt --expires-in 300
-aws --endpoint-url "$S3_ENDPOINT" s3 rm \
-  s3://pomeva-objects/examples/hostname.txt
+import boto3
+from botocore.config import Config
+
+endpoint = "https://sss.pomeva.cn"
+bucket = "pomeva-objects"
+key = "examples/hostname.txt"
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url=endpoint,
+    region_name=os.environ["AWS_DEFAULT_REGION"],
+    config=Config(s3={"addressing_style": "path"}),
+)
+
+with open("/etc/hostname", "rb") as source:
+    expected_body = source.read()
+
+uploaded = False
+try:
+    s3.list_objects_v2(Bucket=bucket, MaxKeys=1)
+    s3.put_object(Bucket=bucket, Key=key, Body=expected_body)
+    uploaded = True
+    head = s3.head_object(Bucket=bucket, Key=key)
+    assert head["ContentLength"] == len(expected_body), head
+
+    presigned_url = s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=300,
+    )
+    with urllib.request.urlopen(presigned_url, timeout=30) as response:
+        assert response.status == 200, response.status
+        assert response.read() == expected_body
+    print("Presigned URL download: PASS (validity 300 seconds)")
+finally:
+    if uploaded:
+        s3.delete_object(Bucket=bucket, Key=key)
+
+print("Public S3 boto3 smoke: PASS")
+PY
 SCRIPT
 ```
 
@@ -1323,7 +1588,11 @@ Expected: Sub2API、S3 和 Admin 入口均符合健康门禁；Filer 持续使�
 
 ### 10.1 服务或应用验收失败
 
-- [ ] **Step 1: 先撤销公网路由（如已启用）**
+- [ ] **Step 1: 在 Sub2API 后台关闭新对象存储开关（如已启用）**
+
+进入 `管理员后台 -> Backup`：关闭“异步图片对象存储”；如果 Backup S3 已切换到 SeaweedFS，则关闭对应 S3 备份开关。用户已确认使用后台开关作为本轮应用侧回退，不导出或自动恢复旧配置。完成后验证 Sub2API 不再向 `pomeva-objects/backups/` 或 `pomeva-objects/images/` 发起新写入。
+
+- [ ] **Step 2: 撤销公网路由（如已启用）**
 
 ```bash
 sudo mv /home/ubuntu/pomeva/services/caddy.d/seaweedfs-s3.caddy \
@@ -1332,7 +1601,7 @@ sudo docker exec pomeva-caddy caddy validate --config /etc/caddy/Caddyfile
 sudo docker exec pomeva-caddy caddy reload --config /etc/caddy/Caddyfile
 ```
 
-- [ ] **Step 2: 停止 SeaweedFS，但保留全部数据**
+- [ ] **Step 3: 停止 SeaweedFS，但保留全部数据**
 
 ```bash
 cd /opt/seaweedfs
@@ -1346,7 +1615,7 @@ sudo docker exec -i -u postgres sub2api-postgres \
 
 Expected: SeaweedFS 容器已停止，但对象目录、Master/Admin 状态、`seaweedfs` 数据库、独立账号、密码文件和备份全部保留。回滚不得自动 `DROP DATABASE`、`DROP ROLE` 或轮换密码。
 
-- [ ] **Step 3: 复验现有业务**
+- [ ] **Step 4: 复验现有业务**
 
 ```bash
 curl -fsS https://api.pomeva.cn/health
@@ -1398,7 +1667,7 @@ flowchart TB
 3. 在增加跨主机 Filer 前，将现有独立 `seaweedfs` 数据库从 `sub2api-postgres` 迁到可被所有节点私网访问的外部共享 PostgreSQL；驱动始终保持 `postgres2`，使用数据库级 `pg_dump/pg_restore`，不执行 `fs.meta.load`。
 4. 部署至少 2 个 Filer；S3 Gateway 使用 `-filer=filer1:8888,filer2:8888`，利用其无状态特性水平扩展。
 5. 为每个物理 Volume 节点设置唯一 `-rack`。不要把同一物理机上的多个 Volume 进程当作跨主机副本。
-6. 将新写入默认副本策略从 `000` 调整为 `001`，保证每个对象有 2 份物理副本；已有对象通过受控修复流程补副本。
+6. 三个物理 Volume 节点位于同一数据中心、各自使用唯一 `-rack` 时，将新写入默认副本策略从 `000` 调整为 `010`，在不同 rack 的节点间保留 2 份物理副本；只有同一 rack 内至少存在两个独立物理节点时才使用 `001`。已有对象通过受控修复流程补副本。
 7. 新增 Volume 节点后，SeaweedFS 不会自动搬迁旧数据。只有在容量分布确需调整时，才在低峰期执行 `volume.balance -force`，并限制 maintenance IO。
 8. 最终将多个 S3 Gateway 放在 Caddy/L4 Load Balancer 后，统一由 `sss.pomeva.cn` 提供入口；应用继续使用 path-style，避免 wildcard bucket DNS/TLS 复杂度。
 9. Admin UI 保持单实例，继续使用 `-urlPrefix=/admin` 和独立持久化状态；负载均衡层只将 `/admin`、`/admin/*` 路由到该实例，不把 Admin worker gRPC、metrics 或后端端口公开。Admin 故障不影响 S3 数据面，恢复时先校验认证、session key 和维护状态再开放入口。
@@ -1407,8 +1676,8 @@ flowchart TB
 
 - 单节点：共享根盘，SeaweedFS 上限 100 × 1 GiB，副本 `000`；逻辑上限约 100 GiB，但根盘先触及 40 GiB 保留线时会提前停止写入。
 - 三节点、每节点配置 100 GiB 逻辑上限：原始容量上限约 300 GiB。
-- 副本 `001`（2 份）：逻辑容量上限约 150 GiB。
-- 副本 `002`（3 份）：逻辑容量上限约 100 GiB。
+- 副本 `010`（跨 rack、2 份）：逻辑容量上限约 150 GiB。
+- 副本 `020`（跨 rack、3 份）：逻辑容量上限约 100 GiB。
 
 ### 4.4 将 `postgres2` 数据库迁往外部共享 PostgreSQL 的维护窗口
 
@@ -1461,10 +1730,17 @@ flowchart TB
 - SeaweedFS 4.40 `WEED_*` 环境覆盖机制：<https://github.com/seaweedfs/seaweedfs/blob/4.40/weed/util/config.go>
 - PostgreSQL 18 `pg_dump`：<https://www.postgresql.org/docs/18/app-pgdump.html>
 - PostgreSQL 18 `pg_restore`：<https://www.postgresql.org/docs/18/app-pgrestore.html>
+- PostgreSQL 18 `DROP DATABASE`：<https://www.postgresql.org/docs/18/sql-dropdatabase.html>
+- PostgreSQL 18 `DROP ROLE`：<https://www.postgresql.org/docs/18/sql-droprole.html>
+- PostgreSQL 18 `pg_auth_members`：<https://www.postgresql.org/docs/18/catalog-pg-auth-members.html>
 - 官方 Docker Compose 示例：<https://github.com/seaweedfs/seaweedfs/blob/4.40/docker/seaweedfs-compose.yml>
 - SeaweedFS 4.40 Admin 命令与安全参数：<https://github.com/seaweedfs/seaweedfs/blob/4.40/weed/command/admin.go#L63-L194>
 - SeaweedFS 4.40 Admin `urlPrefix` 处理：<https://github.com/seaweedfs/seaweedfs/blob/4.40/weed/command/admin.go#L305-L434>
 - SeaweedFS 4.40 Admin 路由与鉴权：<https://github.com/seaweedfs/seaweedfs/blob/4.40/weed/admin/handlers/admin_handlers.go#L61-L104>
+- SeaweedFS 4.40 Volume `preStopSeconds`：<https://github.com/seaweedfs/seaweedfs/blob/4.40/weed/command/volume.go>
+- SeaweedFS rack/data center 副本策略：<https://github.com/seaweedfs/seaweedfs#rack-aware-and-data-center-aware-replication>
+- Docker Compose `stop_grace_period`：<https://docs.docker.com/reference/compose-file/services/#stop_grace_period>
 - Caddy Automatic HTTPS：<https://caddyserver.com/docs/automatic-https>
+- Caddy `import`：<https://caddyserver.com/docs/caddyfile/directives/import>
 - Caddy `reverse_proxy`：<https://caddyserver.com/docs/caddyfile/directives/reverse_proxy>
-- AWS CLI S3 addressing style：<https://docs.aws.amazon.com/cli/latest/topic/s3-config.html>
+- boto3 presigned URL：<https://boto3.amazonaws.com/v1/documentation/api/latest/guide/s3-presigned-urls.html>
