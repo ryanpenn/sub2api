@@ -1,6 +1,6 @@
 # GoTask 发布与运维手册
 
-> 状态：G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 中断恢复、G4-B2b-2a PostgreSQL 容器暂停/恢复及 G4-B2b-2b-1 node2/Redis 数据节点停止/恢复均已通过；`ext.3` 已在三个节点运行；node1/PostgreSQL 数据节点执行前只读复审已通过，实际故障及资源/迁移故障未授权
+> 状态：G1 至 G5 本地实施基线已完成；Sub2API `restart_policy.condition=any` 的静态修正、运行态应用、node1/PostgreSQL 复测、单副本 OOM 与隔离 migration 失败均已通过。当前三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个入口和 `release:verify ENV=local` 正常
 > 适用范围：Sub2API Docker Swarm 本地 ARM64 验证与后续 AMD64 生产环境
 > 基线日期：2026-07-27（Asia/Shanghai）
 
@@ -304,9 +304,9 @@ task ops:status
 
 整个 Sub2API 应用的下线属于独立变更，不复用节点 drain，也不删除 PostgreSQL/Redis。需要明确维护窗口、调用方行为、数据保护和恢复步骤后，再设计带确认门槛的专用任务。
 
-### 7.4 数据节点受控停止/恢复（node2/Redis 已通过，node1/PostgreSQL 未授权）
+### 7.4 数据节点受控停止/恢复（node2/Redis 与修正后的 node1/PostgreSQL 均已通过）
 
-`G4-B2b-2b` 不复用普通节点 drain，也不增加 GoTask、脚本、daemon 或控制面。实际执行拆成 node2/Redis 与 node1/PostgreSQL 两次独立授权；node2 已执行并通过，node1 的只读复审已完成，但实际停止仍须独立授权。两次都只使用普通 `multipass stop/start`，禁止 `--force`、drain、修改 label/service spec/Secret/Config、volume 操作和同时停止第二个 manager。
+`G4-B2b-2b` 不复用普通节点 drain，也不增加 GoTask、脚本、daemon 或控制面。实际执行拆成 node2/Redis 与 node1/PostgreSQL 两次独立授权；node2 已通过，node1 首次执行未通过的历史证据保留，随后最小恢复、配置复盘、静态两文件修正、运行态应用及同场景复测已分别完成并通过。两类场景都只使用普通 `multipass stop/start`，禁止 `--force`、drain、修改 label、数据 service spec/Secret/Config、volume 操作和同时停止第二个 manager。
 
 每次停止前必须在 node1 的部署副本上重新执行验证；不能直接从 macOS 工作区运行，因为本地 CA 导出门槛要求 `hostname=node1`：
 
@@ -398,7 +398,7 @@ unlink "$recovery_log"
 
 node2/Redis 场景由 node1 manager 观察。node2 入口不可达是预期结果；node1/node3 必须保持 quorum 与唯一 Leader，两个存活应用 `/health=200`、`/ready` 在约 3 秒内返回 503，HTTPS 使用已加载证书返回 503。Redis 的新 desired task 必须没有 NODE，并因唯一 placement 无可用节点而 Pending；两个存活节点各只保留一个 Sub2API/Caddy task。不可达节点的旧 task 可能保留最后已知 `Running`，global service 的 desired 数也会随可用节点变化，因此不得要求 `docker service ls` 精确显示 `2/3` 或 `0/1`，也不得用汇总比值推断故障节点进程仍存活。期间不得重启存活 Caddy。恢复后的 node2 Caddy 可在 Redis 已恢复后读取共享 storage，但不能据此宣称“Redis 持续不可用时 Caddy 冷启动”已通过。
 
-node1/PostgreSQL 场景开始前，必须先证明 `multipass exec node2 -- timeout 5 docker node ls` 可用，因为 node1 上的既有 Docker context 和 GoTask 入口在故障期不可用。node1 停止后 30 秒内，node2/node3 必须形成 quorum 和唯一 Leader，且 PostgreSQL 新 desired task 必须没有 NODE、因唯一 placement 无可用节点而 Pending；任一条件未在同一 30 秒窗口出现即恢复并判失败。Redis 保持在 node2；两个存活应用 `/health=200`、`/ready` 在约 3 秒内返回 503。验收读取 task-level desired/current state、NODE 和调度错误，不以汇总 `REPLICAS` 比值作为 liveness。node1 恢复后不要求重新成为 Leader。
+node1/PostgreSQL 场景开始前，必须先证明 `multipass exec node2 -- timeout 5 docker node ls` 可用，因为 node1 上的既有 Docker context 和 GoTask 入口在故障期不可用。配置修正应用后另行授权的复测必须使用拆分门槛：node1 stop 返回后 30 秒内，node2/node3 必须形成 quorum 且只有一个 Leader；50 秒内，PostgreSQL 新 desired task 必须没有 NODE、因唯一 placement 无可用节点而 Pending，且不得漂移。任一门槛失败即恢复并判失败；Pending 一出现就人工恢复，不等待 50 秒或 watchdog。60 秒宿主机 watchdog 保持不变。Redis 保持在 node2；两个存活应用 `/health=200`、`/ready` 在约 3 秒内返回 503。验收读取 task-level desired/current state、NODE 和调度错误，不以汇总 `REPLICAS` 比值作为 liveness。node1 恢复后不要求重新成为 Leader。以上新门槛不追认 2026-07-27 的历史执行通过。
 
 每个场景恢复后，task/container ID 允许变化，但 Swarm node ID、service spec、placement、volume 名称/driver/Mountpoint 和数据身份必须不变。数据 service 应在节点启动后 120 秒内 healthy，完整集群应在 300 秒内恢复三个 manager Ready/Reachable、唯一 Leader、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`、三个入口 200，并最终通过 `release:verify ENV=local`。
 
@@ -408,7 +408,19 @@ node1/PostgreSQL 场景开始前，必须先证明 `multipass exec node2 -- time
 
 2026-07-27 的 `G4-B2b-2b-1` 实测已通过：node2 在复测开始 15 秒内进入 `Down/Unreachable`，两个存活节点 `/health=200`、直连及 HTTPS `/ready=503`，node2 入口不可达；Redis 新 task 无 NODE、因 placement 无可用节点而 Pending，未漂移。故障期汇总值为 Sub2API/Caddy `3/2`、Redis `1/1`，其中包含不可达节点旧 task 的最后已知 `Running`，因此手册已改为 task-level 验收。35 秒时人工启动、49 秒时返回，watchdog 未触发；Redis 从原 AOF 加载，原 volume、Caddy storage、证书、PostgreSQL identity/migration 均不变，最终 `release:verify ENV=local` 通过。完整证据见 [`Sub2API-MultiNode-Deployment-plan.md`](./Sub2API-MultiNode-Deployment-plan.md) 的阶段 4 记录。
 
-2026-07-27 的 node1/PostgreSQL 执行前只读复审已通过，实际故障未授权：确认 node1 当前为 Leader，宿主机 context 固定指向 node1；node2 可用 `/usr/bin/timeout` 包裹原生 Docker CLI 观察剩余控制面，但没有 GoTask 部署副本和本地 CA。复审据此增加硬编码 node1 的恢复保护、撤销保护前的三项确认、故障期证书指纹校验及 Leader/Pending 同一 30 秒门槛；没有新增脚本、任务、代码、服务或控制面。
+2026-07-27 的 node1/PostgreSQL 执行前只读复审已通过：确认 node1 当时为 Leader，宿主机 context 固定指向 node1；node2 可用 `/usr/bin/timeout` 包裹原生 Docker CLI 观察剩余控制面，但没有 GoTask 部署副本和本地 CA。复审据此增加硬编码 node1 的恢复保护、撤销保护前的三项确认、故障期证书指纹校验及 Leader/Pending 同一 30 秒门槛；没有新增脚本、任务、代码、服务或控制面。
+
+同日实际执行结论为 **未通过，环境仅部分恢复**：`06:52:03Z` 启动 60 秒 watchdog 并普通停止 node1，`06:52:07Z` stop 返回；node2 在约 12 秒后成为唯一 Leader，约 17 秒时 node2/node3 均为 Ready，但截至 30 秒 PostgreSQL 仍显示 node1 上旧 task 的最后状态，没有出现要求的无 NODE/Pending task，故按门槛立即恢复。node1 入口不可达，node2/node3 `/health=200`、直连 `/ready=503` 约 2.04–2.08 秒，HTTPS `/ready=503`，证书 serial/指纹不变。`06:52:43Z` 人工启动 node1，VM 为 Running 且来宾可执行后撤销保护，watchdog 未触发。
+
+PostgreSQL 使用原 named volume 恢复，task/container 变为 `zf8yvth1nrkna4iehx79g6qkj`/`8139962ea6fc`；volume 创建时间、Mountpoint、device/inode `2049/302196`、`system_identifier=7666874411637911585` 与 migration `236/236/0/0` 均不变。Redis、Caddy storage、证书、三个 manager 和数据 service 也均恢复。但 node2/node3 的 Sub2API task 在依赖不可用期间变为 unhealthy，随后以 `exit 0`、task `Complete` 结束；restart policy 为 `condition=on-failure`，没有自动重建这两个 task。300 秒门槛后 Sub2API 仍为 node1 `1/1`，node2/node3 直连 `:8080` 不可达、HTTPS `/ready=503`，`release:verify ENV=local` 因缺少两个应用 task 失败，因此故障场景结论保持未通过。
+
+随后独立授权的 `G4-B2b-2b-2-recovery` 已通过：只对 `sub2api-local_sub2api` 执行一次同规格受控 force-update，ForceUpdate generation 从 0 增至 1；image、Config/Secret、placement、resource、update/rollback、restart、mode 与 endpoint 字段保持不变，未重部署 Stack 或触碰其他 service/节点。rollout 从 `07:04:22Z` 到 `07:05:49Z` 串行完成，新 task 为 node1 `sfb1tefnklak`、node2 `i8f63oj42ylw`、node3 `q0jmzdsi8ick`。最终三个 task healthy，三个直连与 HTTPS `/ready=200`，`release:verify ENV=local` 通过；PostgreSQL/Redis 数据身份、Caddy storage、证书和日志门槛均不变。环境已恢复，但这不改变 node1 故障场景未通过的结论，也不授权配置修正或复测。
+
+同日独立授权的 `G4-B2b-2b-2-fix-review` 已完成并通过。现场日志确认：stop 返回后约 12 秒形成 Leader、约 17 秒两个存活 manager Ready，但 node1 heartbeat 到约 40 秒才过期并触发 PostgreSQL 新 desired task；原“Leader 与 Pending 同在 30 秒内”规则因此只保留为历史失败条件。node2/node3 的 Sub2API container 后续均以 `exit 0`、task `Complete` 结束，而当时的 `restart_policy.condition=on-failure` 只覆盖非零错误退出。最小配置白名单仅为：把 Stack 中 Sub2API condition 改为 `any`，并在既有 `validate:stack` 中断言该渲染值且不误改其他 service；保留 `/ready`、全部 healthcheck 参数、`delay=5s/max_attempts=3/window=60s` 与其他 service 不变，不进入 `backend/extends`，不新增脚本、任务、实体、开关或恢复自动化。
+
+后续实施严格按该白名单完成。静态断言先产生预期 RED，再由 Stack 一行修改转为 GREEN；local 与 production-amd64 均渲染通过。运行态只对 Sub2API 应用 `restart-condition=any`，`07:35:01Z–07:36:42Z` 受控滚动完成，其他两个入口在目标节点短暂 502/503 期间持续 200，最终 `release:verify` 通过；Caddy/PostgreSQL/Redis 仍为 `on-failure`。
+
+有效复测中，node1 stop 于 `07:42:19Z` 返回；node2/node3 quorum 与唯一 Leader 立即成立，15 秒时 PostgreSQL 新 desired task 无 NODE、因 placement 约束 Pending，随后立即人工恢复。故障期两个存活节点 `/health=200`、直连 `/ready=503` 约 2.01–2.04 秒且 HTTPS 为 503；node1 于 `07:42:53Z` 恢复并撤销 watchdog，PostgreSQL 在 120 秒门槛内 healthy，完整集群在 12 秒内满足 300 秒门槛。`condition=any` 自动补齐正常退出的应用 task，最终四项 service spec、volume、PostgreSQL/Redis/Caddy storage/TLS 身份无漂移，`release:verify` 通过。此前一次采样器误等待 watchdog 的执行明确记为无效，未追认为通过。
 
 ## 8. 新增 Node4：增加第 4 个 Sub2API 副本
 
@@ -639,6 +651,8 @@ task ops:node-status NODE=node4
 - [GoTask Guide](https://taskfile.dev/docs/guide)
 - [GoTask Taskfile Schema](https://taskfile.dev/docs/reference/schema)
 - [Docker stack deploy](https://docs.docker.com/reference/cli/docker/stack/deploy/)
+- [Docker Compose Deploy restart policy](https://docs.docker.com/reference/compose-file/deploy/#restart_policy)
+- [docker service update](https://docs.docker.com/reference/cli/docker/service/update/)
 - [Docker Swarm rolling updates](https://docs.docker.com/engine/swarm/swarm-tutorial/rolling-update/)
 - [Docker Swarm add nodes](https://docs.docker.com/engine/swarm/swarm-tutorial/add-nodes/)
 - [Docker Swarm drain a node](https://docs.docker.com/engine/swarm/swarm-tutorial/drain-node/)

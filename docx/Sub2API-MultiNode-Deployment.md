@@ -1,10 +1,10 @@
 # Sub2API 多节点部署方案
 
-> 状态：本地验证方案设计与阶段 0 已完成，G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 中断恢复、G4-B2b-2a PostgreSQL 容器暂停/恢复及 G4-B2b-2b-1 node2/Redis 数据节点停止/恢复均已通过；`ext.3` 已在三个节点运行；node1/PostgreSQL 数据节点执行前只读复审已通过，实际故障及资源/迁移故障仍未授权；生产容量细项与生产监控目标按生产准入门槛后续补齐
+> 状态：本地验证方案与 G1 至 G5 实施基线已完成；Sub2API restart condition 最小修正、node1/PostgreSQL 复测、单副本 OOM 和隔离 migration 失败均通过。当前三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个入口与 `release:verify ENV=local` 正常；生产容量、监控、DNS、真实数据迁移及灾难恢复按后续独立门槛补齐
 > 创建日期：2026-07-26  
 > 更新日期：2026-07-27
 > 节点信息来源：[`Multipass-Nodes.md`](./Multipass-Nodes.md)  
-> 当前边界：G1 已生成发布链和 `deploy/cluster` 骨架，G2 已发布 private GHCR 首版双架构制品，G3 已完成三 manager、共享 PostgreSQL/Redis、一次性 bootstrap 与 node1 单副本 TLS 基线；阶段 3 多实例前置收敛及 `v0.1.165-ext.2` 本地候选验证已通过，G4-A 已把正式 Sub2API/Caddy 扩展为三节点 `3/3`，S4-B 已完成非破坏性专项，G4-B1/S4-C 已完成受控滚动、失败暂停、旧清单回滚及模型价格 Config 回滚，G4-B2a/S4-D 已完成单 task、单节点与 Caddy 重启恢复，G4-B2b-1 已完成 Redis 暂停/恢复；G4-B2b-2a 在 `ext.2` 暴露的直连 `/ready` 超时偏差已经 `backend/extends/lifecycle` 两文件最小修补，`ext.3` 已按固定归档分发并滚动到三个正式副本，同一 PostgreSQL 容器暂停/恢复复测已通过；G4-B2b-2b-1 已完成 node2/Redis 普通停止、原虚拟磁盘和 local volume 恢复验证；node1/PostgreSQL 执行前只读复审已关闭恢复保护和模板误操作风险。当前不执行 node1/PostgreSQL 数据节点中断、OOM、受控 migration 失败、生产部署、数据迁移或切流
+> 当前边界：本地阶段 0 至阶段 5 已关闭。`ext.2` 暴露的 PostgreSQL readiness 偏差由 `backend/extends/lifecycle` 两文件修补并在 `ext.3` 复测通过；node1/PostgreSQL 首次整节点场景暴露的正常退出 task 不重建问题，仅由部署层把 Sub2API `restart_policy.condition` 改为 `any` 并增加既有渲染断言，受控滚动和修订门槛复测已通过。node3 单副本真实 cgroup OOM 自动恢复，隔离 migration checksum 故障未进入 ready 且未影响正式数据库。当前不执行生产部署、数据迁移、DNS 切流、容量定标或灾难恢复
 
 ## 1. 文档目的
 
@@ -1303,7 +1303,7 @@ task ops:node-status
 
 同日完成 S4-B 非破坏性专项：node1 签发的 JWT 可跨 node2/node3 使用，refresh token 跨节点轮换、旧 token 拒绝和注销后撤销均通过；一个临时 API Key 在三个节点间写后可见并已删除；三个节点的用户、分组、模型价格、版本和管理 WebSocket 一致。OAuth、SSE/OpenAI WebSocket、生图 limiter、Batch lock、Scheduled Test、Account/Proxy expiry、计费和 migration 使用既有协议级、race 或隔离 integration harness 验证，没有为凑实机用例新增 Provider、Scheduled Test plan、业务实体或外部费用。正式数据库 migration 保持 `236/236` 唯一、零空 checksum、零重复 filename，敏感日志扫描命中 0。管理员 TOTP 当前未启用；滚动与回滚已由后续 G4-B1/S4-C 完成，三个正式 task 同时替换、双协调后端同时故障、TLS 续期/恢复和故障矩阵仍需 G4-B2 或对应后续授权，不能由 S4-B 结果推定通过。
 
-随后完成获授权的 G4-B1/S4-C：固定旧制品实际回滚到 `v0.1.165-ext.1` 后重新滚动到 `ext.2`；可恢复错误 Secret 使 Swarm 明确进入 `paused` 且验证任务失败，恢复正式 Secret 后三个副本回到一致状态；模型价格 Config 完成不重建镜像的滚动更新和旧 Config 回滚。验证同时发现一次 Stack 变更多个 service 时，Swarm 会分别并行滚动：Sub2API healthcheck 与 Caddy upstream health 同时变化曾出现 1 个样本有两个入口短暂失败。第一期因此固定为跨 service 关联变更串行执行，新旧应用共用过渡健康路径，先应用、后应用 healthcheck、最后 Caddy upstream health。最终 Sub2API/Caddy `3/3`、数据服务 `1/1`、三个 `/ready=200`，没有残留临时 Secret/Config；后续 G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 暂停/恢复均已通过。G4-B2b-2a 首次在 `ext.2` 下失败，最小修补后的 `ext.3` 已滚动部署并在同一 PostgreSQL 容器暂停/恢复场景复测通过；G4-B2b-2b-1 node2/Redis 数据节点停止/恢复也已通过，node1/PostgreSQL 与资源/迁移故障仍未授权。
+随后完成获授权的 G4-B1/S4-C：固定旧制品实际回滚到 `v0.1.165-ext.1` 后重新滚动到 `ext.2`；可恢复错误 Secret 使 Swarm 明确进入 `paused` 且验证任务失败，恢复正式 Secret 后三个副本回到一致状态；模型价格 Config 完成不重建镜像的滚动更新和旧 Config 回滚。验证同时发现一次 Stack 变更多个 service 时，Swarm 会分别并行滚动：Sub2API healthcheck 与 Caddy upstream health 同时变化曾出现 1 个样本有两个入口短暂失败。第一期因此固定为跨 service 关联变更串行执行，新旧应用共用过渡健康路径，先应用、后应用 healthcheck、最后 Caddy upstream health。最终 Sub2API/Caddy `3/3`、数据服务 `1/1`、三个 `/ready=200`，没有残留临时 Secret/Config；后续 G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 暂停/恢复均已通过。G4-B2b-2a 首次在 `ext.2` 下失败，最小修补后的 `ext.3` 已滚动部署并在同一 PostgreSQL 容器暂停/恢复场景复测通过；G4-B2b-2b-1 node2/Redis 数据节点停止/恢复也已通过。G4-B2b-2b-2 首次未通过的历史保留，后续仅修改 Sub2API restart condition 并完成运行态应用与同场景复测；单副本 OOM 和隔离 migration 失败也已通过，最终 G5 只确认本地实施基线。
 
 输出：
 
@@ -1506,7 +1506,7 @@ task ops:node-status
 32. **本地可观测性（已确认）**：第一期不部署 Prometheus/Grafana/Loki 等常驻组件；使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据和 PostgreSQL/Redis 原生查询，以 `request_id + node + replica` 关联链路，由 GoTask 提供只读状态、日志和采样命令并形成验收记录。生产指标后端、日志集中化、保留期、告警阈值、值班和升级流程纳入生产准入前的“容量与可观测性补充方案”，当前不预设技术选型。
 33. **Swarm 节点角色（已确认）**：`node1`、`node2`、`node3` 固定作为 manager 并保留 worker 能力，以维持三个 manager 的 quorum 并演练单 manager 故障；后续容量扩展节点全部只作为 worker 加入，不把 manager 扩展到 3 个以上。原 manager 永久失效时从合格 worker 中晋升替代节点，只恢复到三个 manager。
 34. **实施产物（已完成 G3）**：ARM64/AMD64 GHCR 平台 digest、本地 ARM64 source/node image ID 与归档 SHA-256 均已回填；发布 tag、fork commit、构建输入、镜像身份和 workflow run 可追溯。
-35. **当前授权**：本地设计与 G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 暂停/恢复、G4-B2b-2a PostgreSQL 容器暂停/恢复及 G4-B2b-2b-1 node2/Redis 数据节点停止/恢复已完成并通过。原 `ext.2` 现场 readiness 失败已严格在 `backend/extends/lifecycle/manager.go` 与 `manager_test.go` 内完成单 in-flight probe、caller 硬超时和测试；独立授权的候选构建、归档分发、活动清单切换、`ext.3` 三副本受控滚动、同场景复测及 annotated tag 闭环均已完成。node2 普通停止时两个存活应用 fail-closed、Redis 新 task 因 placement 无可用节点而 Pending 且未漂移；恢复后原 volume、AOF、Caddy storage、证书和 PostgreSQL 不变量均通过。node1/PostgreSQL 执行前只读复审已通过：故障期固定由 node2 的有界原生 Docker 命令观察，node1 使用硬编码 watchdog/trap，并在确认 VM Running 和来宾可执行后才撤销保护。当前仍未授权上传 GHCR、实际执行 `G4-B2b-2b-2`、OOM、受控 migration 失败或生产变更。该结果不能外推为 `--force`、断电、磁盘损坏、VM 重建、跨节点/备份恢复、Redis 持续不可用时 Caddy 冷启动、证书续期协调或生产 HA 已通过。
+35. **当前授权与交付**：本地设计及 G1 至 G5 实施基线均已完成。`backend/extends` 的代码范围仍只包含有失败证据的多实例安全修补；node1/PostgreSQL 首次未通过后，部署层仅把 Sub2API `restart_policy.condition` 从 `on-failure` 改为 `any` 并在既有 `validate:stack` 加四 service 断言，30/50/60 秒门槛复测通过。单副本 OOM 与隔离 migration checksum 故障也已完成，正式 volume、PostgreSQL `236/236/0/0`、Redis/Caddy storage 和 TLS 身份无漂移。G5 只确认本地 ARM64 实施基线；不授权上传 GHCR、生产部署、DNS、真实迁移或切流，也不能外推为 `--force`、断电、磁盘损坏、VM 重建、跨节点/备份恢复、Redis 持续不可用时 Caddy 冷启动、证书续期协调或生产 HA 已通过。
 
 ## 10. 计划产物
 
@@ -1589,6 +1589,13 @@ task ops:node-status
 | 2026-07-27 | 完成 G4-B2b-2b-review 数据节点故障执行前审查 | 已通过审查，实际故障未授权 | 修正“停止节点后三个 `/ready=503`”为“故障节点不可达、另外两个 `/health=200` 与 `/ready=503`”；实际场景拆为先 node2/Redis、完整恢复后再 node1/PostgreSQL。固定普通 `multipass stop`、60 秒宿主机 watchdog + trap、30 秒 quorum、120 秒数据服务及 300 秒完整恢复门槛；记录 local volume 与 PostgreSQL system identifier/Redis persistence/Caddy storage 身份。未停止节点、服务或修改运行态 |
 | 2026-07-27 | 完成 G4-B2b-2b-1 node2/Redis 数据节点停止/恢复 | 已通过（保留故障边界） | 普通停止后 node2 在 15 秒内 `Down/Unreachable`，node1/node3 保持 quorum；两个存活节点 `/health=200`、直连与 HTTPS `/ready=503`，node2 入口不可达。Redis 新 task 无 NODE、因唯一 placement 无可用节点而 Pending，未漂移；实测确认 `service ls` 会保留不可达节点旧 task 的最后已知状态，故改用 task-level 证据。35 秒人工启动、49 秒返回，watchdog 未触发；Redis 从原 AOF 加载，原 volume/device/inode、15 个 Caddy storage key、证书及 PostgreSQL 不变量均不变，最终 `release:verify` 通过。未执行 node1、`--force`、DNS 或生产变更 |
 | 2026-07-27 | 完成 G4-B2b-2b-2 node1/PostgreSQL 执行前只读复审 | 已通过复审，实际故障未授权 | 确认 node1 当前为 Leader且宿主机 context 随其失效；node2 可用有界原生 Docker CLI，但没有 GoTask 部署副本和本地 CA。关闭两项文档阻断：改为硬编码 node1 的 60 秒 watchdog/trap，且仅在 start 成功、VM Running、来宾可执行后撤销保护；Leader 与 PostgreSQL Pending 均须在同一 30 秒窗口出现。未停止节点、修改运行态、增加脚本/任务/实体或授权实际故障 |
+| 2026-07-27 | 执行 G4-B2b-2b-2 node1/PostgreSQL 数据节点停止/恢复 | 未通过，环境仅部分恢复 | 普通停止后 node2 约 12 秒成为 Leader、约 17 秒时两个存活 manager Ready，但 30 秒内 PostgreSQL 未出现无 NODE/Pending task，故立即恢复；两个存活应用 `/health=200`、直连和 HTTPS `/ready=503`，证书不变。node1 人工恢复且 watchdog 未触发，PostgreSQL 原 volume、system identifier、migration 及 Redis/Caddy storage 均不变；但 node2/node3 Sub2API task 在 unhealthy 后以 `exit 0/Complete` 结束，`condition=on-failure` 未重建。300 秒后 Sub2API 仅 node1 `1/1`，`release:verify` 失败。未 force-update、重部署、复测或执行其他故障，最小恢复动作待独立授权 |
+| 2026-07-27 | 完成 G4-B2b-2b-2-recovery 最小环境恢复 | 已通过，不改变故障结论 | 只对 `sub2api-local_sub2api` 执行一次 force-update；ForceUpdate generation `0→1`，其他已登记字段不变，未重部署 Stack 或触碰其他 service/节点。`07:04:22Z–07:05:49Z` 串行恢复三个 healthy task；Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个直连/HTTPS `/ready=200`，`release:verify` 通过。PostgreSQL/Redis 数据身份、Caddy storage、证书和日志门槛不变；配置修改与故障复测仍未授权 |
+| 2026-07-27 | 完成 G4-B2b-2b-2-fix-review 配置层只读复盘 | 已通过审查，静态修正未授权 | 实测 node1 stop 返回后约 12 秒形成 Leader、约 17 秒两个存活 manager Ready、约 40 秒 heartbeat 才过期并触发 PostgreSQL 新 desired task，故复测门槛拆为 30 秒 quorum/唯一 Leader、50 秒无 NODE/Pending，并保留 60 秒 watchdog。node2/node3 Sub2API task 以 `exit 0/Complete` 结束，最小白名单仅把 Sub2API `condition` 从 `on-failure` 改为 `any`，在既有 `validate:stack` 加渲染断言；保留 `/ready`、healthcheck/restart 其余参数与其他 service，不进入 `backend/extends`。本轮未修改 Stack、源码或运行态，也未执行复测 |
+| 2026-07-27 | 完成 G4-B2b-2b-2-fix 与 fix-deploy | 已通过 | 严格只修改 Stack 中 Sub2API condition 与既有 `validate:stack` 四 service 断言，先 RED 后 GREEN；local/production-amd64 渲染通过。运行态只执行 `restart-condition=any` 的受控滚动，`07:35:01Z–07:36:42Z` 完成，其他 service 与 ForceUpdate 保持不变，三个入口和 `release:verify` 通过 |
+| 2026-07-27 | 完成 G4-B2b-2b-2-retest | 已通过，保留首次失败与一次无效采样记录 | 有效复测中 stop 返回后 0 秒确认 quorum/唯一 Leader，15 秒出现无 NODE、placement 失败的 PostgreSQL Pending task并立即恢复；两个存活应用 `/health=200`、直连 `/ready=503` 约 2.01–2.04 秒，12 秒内完整恢复。Sub2API task 由 `condition=any` 自动补齐，四项 service spec、PostgreSQL/Redis/Caddy storage/TLS 身份和最终 `release:verify` 均通过 |
+| 2026-07-27 | 完成 G4-B2c 单副本 OOM 与隔离 migration 失败 | 已通过（本地故障边界） | node3 cgroup 达到 2 GiB，记录 `oom=1/oom_group_kill=1`，原容器 `OOMKilled=true/exit=137`，另外两个入口全程 200，node3 约 11 秒恢复。隔离数据库中的错误 `001_init.sql` checksum 使临时 task exit 1 且从未 ready，正式 migration 保持 `236/236/0/0`，临时 service/Secret/数据库全部清理 |
+| 2026-07-27 | 完成 G5 本地实施基线交付确认 | 已通过 | 最终三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1` 与三个 HTTPS `/ready` 正常；完整容量定标、Redis 不可用时 Caddy 冷启动/续期、AMD64 生产部署、DNSPod、真实迁移、备份恢复和生产监控明确延期，不外推为生产 HA |
 | 2026-07-26 | WebSocket 采用进程内登记与到期重连 | 已确认第一期最小范围 | draining 拒绝新 upgrade；已有连接可继续到窗口结束并在到期发送 `1012 Service Restart`；第一期不识别当前/new turn，不迁移连接，不使用 Redis 或新增实体 |
 | 2026-07-26 | WebSocket 连接绑定状态保持进程内 | 已确认 | 重连建立新连接，不跨副本续接未完成 turn；仅确需跨请求/副本读取的状态复用现有 Redis，不新增实体 |
 | 2026-07-26 | 保留应用启动 migration 并由 PostgreSQL 锁串行化 | 已确认 | 不新增 migration Job/ext；三个副本可同时启动但不能同时执行 SQL；失败或超时副本不进入 ready，具体超时、`*_notx.sql` 恢复和 forward-only 回滚门槛见第 6.4.1 节 |
@@ -1649,6 +1656,8 @@ task ops:node-status
 - 模型价格默认配置：[`backend/internal/config/config.go`](../backend/internal/config/config.go)
 - Docker Swarm 滚动更新：[Apply rolling updates to a service](https://docs.docker.com/engine/swarm/swarm-tutorial/rolling-update/)
 - Docker Compose Deploy 更新顺序与并行度：[Compose Deploy Specification](https://docs.docker.com/reference/compose-file/deploy/)
+- Docker Compose restart condition 语义：[Compose Deploy restart policy](https://docs.docker.com/reference/compose-file/deploy/#restart_policy)
+- Docker Swarm service 参数更新与受控滚动：[docker service update](https://docs.docker.com/reference/cli/docker/service/update/)
 - Docker Swarm service 与 `global`/host publish：[Deploy services to a swarm](https://docs.docker.com/engine/swarm/services/)
 - Docker Swarm service 使用 host network：[Host network driver](https://docs.docker.com/engine/network/drivers/host/)
 - Docker Swarm Config：[Store configuration data using Docker Configs](https://docs.docker.com/engine/swarm/configs/)

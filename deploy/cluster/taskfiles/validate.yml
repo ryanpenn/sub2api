@@ -101,6 +101,24 @@ tasks:
 
         rendered=$(docker stack config --compose-file "{{.STACK_FILE}}")
         printf '%s\n' "$rendered" | grep -q 'mode: global'
+        for restart_expectation in \
+          sub2api:any \
+          caddy:on-failure \
+          postgres:on-failure \
+          redis:on-failure; do
+          service_name=${restart_expectation%%:*}
+          expected_condition=${restart_expectation#*:}
+          actual_condition=$(printf '%s\n' "$rendered" | awk -v target="$service_name" '
+            $0 == "  " target ":" { in_service = 1; next }
+            in_service && /^  [[:alnum:]_-]+:$/ { exit }
+            in_service && /^      restart_policy:$/ { in_restart = 1; next }
+            in_restart && /^        condition:/ { print $2; exit }
+          ')
+          if [ "$actual_condition" != "$expected_condition" ]; then
+            echo "Unexpected restart condition: $service_name=$actual_condition expected=$expected_condition" >&2
+            exit 1
+          fi
+        done
         if printf '%s\n' "$rendered" | grep -Eq 'docker\.sock|:latest([@[:space:]]|$)'; then
           echo 'Stack contains a forbidden Docker socket or latest tag' >&2
           exit 1

@@ -60,7 +60,7 @@ services:
         failure_action: pause
         monitor: 30s
       restart_policy:
-        condition: on-failure
+        condition: any
         delay: 5s
         max_attempts: 3
         window: 60s
