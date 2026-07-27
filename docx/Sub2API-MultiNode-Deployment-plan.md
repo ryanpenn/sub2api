@@ -445,6 +445,7 @@ deploy/cluster/
 - `backend/cmd/server/wire.go` 与生成的 `wire_gen.go`：只接入一个 `extends.ProviderSet`；
 - `backend/cmd/server/main.go`：只接入 draining 和 shutdown timeout；如确需配置时，`internal/config/config.go` 只增加一个运行时长参数，不增加功能开关；
 - `backend/internal/server/http.go`、`router.go`、common route：只注入窄 readiness interface 并注册 `/ready`；
+- `backend/internal/web/embed_on.go` 与既有测试：只把 `/ready` 加入嵌入式前端 bypass 列表，避免 readiness 被 SPA fallback 截获；
 - `backend/internal/handler/wire.go`、`openai_gateway_handler.go` 与 `openai_live.go`：只注入窄 WebSocket lifecycle interface、登记两个既有 WebSocket 入口，并在已证明遗漏的 WebSocket 生图入口复用现有 limiter；
 - `backend/internal/handler/gateway_handler.go` 与 `gemini_v1beta_handler.go`：只让 Gemini native 图片请求复用同一现有 limiter；该例外由失败证据触发，不推广为通用 limiter 框架；
 - 五个 OAuth service 文件：只替换 store 字段、构造注入和 `Put/Take` 调用；
