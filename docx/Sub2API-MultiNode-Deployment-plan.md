@@ -46,7 +46,7 @@
 | upstream 基线 commit | `2730c1c43b29be003925b033f3f9e645e726bb8c` |
 | upstream VERSION | `backend/cmd/server/VERSION = 0.1.165` |
 | fork VERSION | `backend/extends/VERSION = ext.3`；独立递增，不随 upstream 重置 |
-| 组合版本 | 仓库与活动本地集群均为 `0.1.165-ext.3`，版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`，尚未创建 tag 或上传 GHCR |
+| 组合版本 | 仓库与活动本地集群均为 `0.1.165-ext.3`；annotated tag `v0.1.165-ext.3` 已固定到版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`，未上传 GHCR |
 | `backend/extends` | 已完成 Redis OAuth SessionStore、最小 lifecycle manager，以及 PostgreSQL readiness 单 in-flight probe 与 caller 硬超时修补；没有新增实体、功能开关或通用扩展框架 |
 | `deploy/cluster` | 已创建通用 Stack、两套环境档、Caddyfile 和 GoTask 契约；活动 `local-arm64/cluster.env` 已在提交 `3608d6c7b` 固定 `v0.1.165-ext.3` 的 source image ID、归档 SHA-256 与三节点 node image ID |
 | release workflow | 唯一入口为 GHCR-only `workflow_dispatch`；只读组合双 VERSION并校验已有 tag，任何 digest push 前要求已有 package 为 private 或确认尚不存在，push 后再次确认 private 才提升三个不可变 tag；不创建 GitHub Release、不发布 Docker Hub、不发送通知 |
@@ -85,11 +85,12 @@ flowchart LR
 | `G4-B2b-2a-fix` PostgreSQL readiness 最小修补授权 | 仅允许修改 `backend/extends/lifecycle/manager.go` 与 `manager_test.go`，实现单 in-flight probe、caller 硬超时并完成测试；不提升版本、不构建、不部署、不重复故障注入 | 已完成 |
 | `G4-B2b-2a-candidate` 本地候选授权 | 审核修补提交；允许将 `backend/extends/VERSION` 提升到 `ext.3`，在本机构建并核验 ARM64 镜像；不创建 tag、不上传、不分发节点、不改活动清单、不部署 | 已完成 |
 | `G4-B2b-2a-deploy-retest` 候选部署复测授权 | 允许分发已核验归档、切换本地活动清单、受控滚动三个副本并重复同一 PostgreSQL 容器暂停/恢复场景；失败时回滚 `ext.2`；不创建 tag、不上传、不执行其他故障 | 已完成并通过 |
+| `G4-B2b-2a-tag` ext.3 标签闭环授权 | 允许创建 annotated tag `v0.1.165-ext.3` 并固定到版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`，只推送 Git tag；不上传 GHCR、不修改运行态 | 已完成 |
 | `G4-B2b-2b` 数据节点故障授权 | 允许停止并恢复承载数据服务的 manager 节点 | 未授权 |
 | `G4-B2c` 资源与迁移故障授权 | 允许制造单副本 OOM 或受控 migration 失败 | 未授权 |
 | `G5` 交付确认 | 确认本地验收结论并关闭实施计划 | 未授权 |
 
-任何授权都只覆盖表中动作。`G1` 不隐含 `G2/G3`，`G4-A/G4-B1/G4-B2a/G4-B2b-1/G4-B2b-2a` 不隐含源码修补、`G4-B2b-2b/G4-B2c` 或生产授权；`G4-B2b-2a-fix` 不隐含候选发布，`G4-B2b-2a-candidate` 不隐含 tag、上传或部署，`G4-B2b-2a-deploy-retest` 也不隐含 Git tag、GHCR 上传或其他故障注入。已执行不等于已通过，仓库测试或本机构建通过也不等于故障门槛已通过。
+任何授权都只覆盖表中动作。`G1` 不隐含 `G2/G3`，`G4-A/G4-B1/G4-B2a/G4-B2b-1/G4-B2b-2a` 不隐含源码修补、`G4-B2b-2b/G4-B2c` 或生产授权；`G4-B2b-2a-fix` 不隐含候选发布，`G4-B2b-2a-candidate` 不隐含 tag、上传或部署，`G4-B2b-2a-deploy-retest` 不隐含 Git tag、GHCR 上传或其他故障注入，`G4-B2b-2a-tag` 也不隐含镜像发布或运行态变更。已执行不等于已通过，仓库测试或本机构建通过也不等于故障门槛已通过。
 
 ### 4.2 总体阶段状态
 
@@ -642,6 +643,12 @@ deploy/cluster/
 - 解除暂停后约 15.75 秒取得首个完整恢复样本：PostgreSQL 接受连接且 healthy，三个直连 `/health`、`/ready` 与 HTTPS 均恢复 200。PostgreSQL task `b5ysani4aye7gl2gbpxwv03v6`、容器、volume、三个 Sub2API/Caddy task 均未替换，migration 仍为 `236/236/0`，近 10 分钟 Sub2API panic/fatal 为 0，最终 `release:verify` 通过；
 - 本次只关闭“同一 PostgreSQL 容器短时暂停/恢复”的 readiness 门槛，不覆盖 PostgreSQL 进程重启、volume 重挂载、node1 停止、备份恢复、OOM、migration 失败或生产故障域。未创建 `v0.1.165-ext.3` Git tag，未上传 GHCR，因复测通过未执行 `ext.2` 回滚。
 
+`G4-B2b-2a-tag` ext.3 标签闭环记录（2026-07-27，已完成）：
+
+- annotated tag `v0.1.165-ext.3` 的 tag object 为 `de000a7f6ed506b76b10384da8301dc18c485637`，peel 后固定到版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`；本地与 `origin` 的 peeled commit 已核对一致；
+- 标签创建前确认目标提交位于当前 `main` 历史中，两个 VERSION 组合为 `0.1.165-ext.3`，本地/远端不存在同名标签，`backend/go.mod` 不含 `replace`；
+- 只推送 Git tag。release workflow 仅接受 `workflow_dispatch`，本次 tag push 未触发 GHCR 构建；未上传镜像、未创建 GitHub Release、未修改集群运行态或分支内容。
+
 禁止在本阶段执行：删除持久化卷、`docker stack rm` 通用卸载、破坏真实业务数据、生产 DNS 修改或未记录的 `--force` 删除。
 
 ### 9.5 S4-E：本地容量与稳定性记录
@@ -785,6 +792,6 @@ deploy/cluster/
 - [x] 候选节点分发、活动清单变更、受控部署和原场景现场复测已另行授权并闭环；
 - [ ] `G4-B2b-2b/G4-B2c` 剩余故障矩阵范围是否接受；
 - [ ] 阶段 5 交付物是否足够；
-- [x] `G1/G2/G3` 已分别授权并完成；`G4-A`、`S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D`、`G4-B2b-1`、`G4-B2b-2a-fix`、`G4-B2b-2a-candidate` 与 `G4-B2b-2a-deploy-retest` 已完成，PostgreSQL 容器暂停/恢复现场门槛已通过；`G4-B2b-2b/G4-B2c` 未授权。
+- [x] `G1/G2/G3` 已分别授权并完成；`G4-A`、`S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D`、`G4-B2b-1`、`G4-B2b-2a-fix`、`G4-B2b-2a-candidate`、`G4-B2b-2a-deploy-retest` 与 `G4-B2b-2a-tag` 已完成，PostgreSQL 容器暂停/恢复现场门槛及 ext.3 标签闭环已通过；`G4-B2b-2b/G4-B2c` 未授权。
 
-当前 G0/G1/G2/G3、实施阶段 0 至阶段 3、`S4-A/S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D` 低风险子集、`G4-B2b-1` Redis 暂停/恢复及 `G4-B2b-2a` PostgreSQL 容器暂停/恢复均已通过，活动本地集群为 `ext.3`。下一步建议先审核本轮清单与现场证据，再单独授权创建 annotated Git tag `v0.1.165-ext.3` 并固定到版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`；该动作只推送 Git tag，不上传 GHCR。tag 闭环后再单独决定是否授权 `G4-B2b-2b` 数据节点故障；当前不执行数据节点中断、OOM、受控 migration 失败、生产部署或 DNS 变更。
+当前 G0/G1/G2/G3、实施阶段 0 至阶段 3、`S4-A/S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D` 低风险子集、`G4-B2b-1` Redis 暂停/恢复及 `G4-B2b-2a` PostgreSQL 容器暂停/恢复均已通过，活动本地集群为 `ext.3`，annotated tag `v0.1.165-ext.3` 已固定到 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`。下一步建议先对 `G4-B2b-2b` 数据节点故障做只读执行前审查，明确停止/恢复顺序、自动恢复保护、manager quorum、数据目录与验收/停止门槛，再单独决定是否授权实际故障注入；当前不执行数据节点中断、OOM、受控 migration 失败、生产部署或 DNS 变更。

@@ -58,7 +58,7 @@ multipass exec node3 -- <command>
 | Sub2API | `sub2api-local/sub2api:v0.1.165-ext.3-arm64` | `43d69c5fa76eb0f3c809a97251f2eee3477c04cb5324d6449fea6b6bb67b1f6c` | `sha256:fd867fc19da56a25bae98930d2186159f3650a83cc5cefb99164ae4951f01a6f` |
 | Caddy | `sub2api-local/caddy:v2.11.4-redis-v1.8.1-arm64` | `cc8f05e47661ca5b41998b884831abc8e126082cf9ed697cd82fdc56d9c92ff2` | `sha256:26a85a756bcbd9d2f94d9bc55e48fce85ee55cf181b6002a3c82e1292504b739` |
 
-当前 Sub2API `v0.1.165-ext.3` 固定到版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`，source image ID 为 `sha256:03e01bbd24c1818ac1f8ad9ec6413969ed9e6e69a524cb2795f993ed756da6aa`，容器内 `/app/sub2api` SHA-256 为 `c6d73fc00d060cf1d04ae0ffc3f76796b1c679bd14205692ad3f73c63e4e8b65`。尚未创建 `v0.1.165-ext.3` Git tag，也未上传 GHCR。已验证的 `v0.1.165-ext.2` 镜像仍保留在三个节点作为回滚输入；更早的 `ext.1` 只作为 G4-B1 实际回滚证据保留。
+当前 Sub2API `v0.1.165-ext.3` 固定到版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`，annotated tag 已创建并推送；tag object 为 `de000a7f6ed506b76b10384da8301dc18c485637`。source image ID 为 `sha256:03e01bbd24c1818ac1f8ad9ec6413969ed9e6e69a524cb2795f993ed756da6aa`，容器内 `/app/sub2api` SHA-256 为 `c6d73fc00d060cf1d04ae0ffc3f76796b1c679bd14205692ad3f73c63e4e8b65`；未上传 GHCR。已验证的 `v0.1.165-ext.2` 镜像仍保留在三个节点作为回滚输入；更早的 `ext.1` 只作为 G4-B1 实际回滚证据保留。
 
 宿主机曾因本地 Docker context 元数据缺失而无法直接访问 Swarm。恢复时只将宿主机既有 SSH 公钥加入 node1，并重建 `sub2api-local=ssh://ubuntu@192.168.252.2`；没有启用密码 SSH、没有暴露 Docker TCP daemon，也没有改变 service。正式发布命令仍从 node1 的固定工作副本执行。
 

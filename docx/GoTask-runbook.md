@@ -50,7 +50,7 @@ GoTask 不是长驻运维平台，不承担：
 
 `CONFIRM` 不是密码。JWT/TOTP key、数据库/Redis 密码、Caddy storage encryption key 和 Provider 凭据不得放入 Task 变量、命令行、Git 或发布摘要，Task 只引用已创建的版本化 Swarm Secret 对象。
 
-当前仓库 VERSION、活动 `local-arm64/cluster.env`、三个节点镜像和 service 均为 `v0.1.165-ext.3`，活动清单提交为 `3608d6c7b`；三节点 node image ID 均为 `sha256:fd867fc19da56a25bae98930d2186159f3650a83cc5cefb99164ae4951f01a6f`。尚未创建同名 Git tag，也未上传 GHCR。宿主机本地 Docker context 曾因元数据缺失而重建为 `sub2api-local=ssh://ubuntu@192.168.252.2`，仅使用既有 SSH 公钥且没有暴露 Docker TCP daemon；发布/回滚命令仍应在 node1 的固定工作副本中执行。
+当前仓库 VERSION、活动 `local-arm64/cluster.env`、三个节点镜像和 service 均为 `v0.1.165-ext.3`，活动清单提交为 `3608d6c7b`；annotated tag 已固定到版本提交 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`，三节点 node image ID 均为 `sha256:fd867fc19da56a25bae98930d2186159f3650a83cc5cefb99164ae4951f01a6f`。本轮未上传 GHCR。宿主机本地 Docker context 曾因元数据缺失而重建为 `sub2api-local=ssh://ubuntu@192.168.252.2`，仅使用既有 SSH 公钥且没有暴露 Docker TCP daemon；发布/回滚命令仍应在 node1 的固定工作副本中执行。
 
 ## 3. 安装与基本命令
 
