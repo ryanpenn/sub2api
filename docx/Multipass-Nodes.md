@@ -112,3 +112,14 @@ multipass exec node3 -- <command>
 - 最终 `release:verify ENV=local` 通过，Sub2API/Caddy 为 `3/3`，PostgreSQL/Redis 为 `1/1`。应用 DB 0 包含动态 TTL/锁/缓存 key，瞬时 key 数不作为数据完整性校验。
 
 该记录只覆盖同一 Redis 进程的短时不可用与恢复，不覆盖 Redis 进程重启、AOF 重放、数据卷恢复、Redis 不可用时 Caddy 冷启动、真实 OAuth 事务、证书续期、PostgreSQL/数据节点中断或生产故障域。
+
+## G4-B2b-2a PostgreSQL 中断恢复记录
+
+2026-07-27 在不停止 node1、不修改 volume 或 service spec 的边界内，将 PostgreSQL 容器 `81c5e2921ae8` 暂停约 25.02 秒后恢复。本项执行完成，但 readiness 门槛未通过：
+
+- 暂停期间三个 Sub2API 均保持直连 `/health=200`，但直连 `/ready` 在多轮 4 秒客户端期限内超时为 `000`，没有返回预期的 503；Caddy active health 在过渡后让三个 HTTPS 入口稳定返回 503，外层入口没有误报 ready；
+- 解除暂停后 PostgreSQL 约 0.25 秒恢复 `pg_isready`，三个直连 `/ready` 恢复 200，三个 HTTPS 入口约 3.3 秒内全部恢复 200，Docker health 约 10.0 秒后恢复 healthy；
+- PostgreSQL task `b5ysani4aye7gl2gbpxwv03v6`、container ID、volume `sub2api-local_postgres_data`、三个 Sub2API/Caddy task 均未变化；`schema_migrations` 恢复前后均为 236 条、236 个唯一 filename、0 个空 checksum；
+- 最终 `release:verify ENV=local` 通过，Sub2API/Caddy 为 `3/3`，PostgreSQL/Redis 为 `1/1`，Sub2API panic/fatal 为 0。
+
+当前证据表明 Caddy/Swarm 外层 probe 能 fail-closed，但应用的 PostgreSQL `PingContext` 未在既定 2 秒预算内返回。完成失败证据审核和最小修补授权前，不重复 PostgreSQL 故障注入；本记录也不覆盖 PostgreSQL 进程重启、volume 重挂载、数据节点停止、备份恢复、OOM、migration 失败或生产故障域。
