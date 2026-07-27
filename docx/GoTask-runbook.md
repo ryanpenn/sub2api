@@ -1,6 +1,6 @@
 # GoTask 发布与运维手册
 
-> 状态：G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集与 G4-B2b-1 Redis 中断恢复已通过；G4-B2b-2a PostgreSQL 暂停/恢复已执行但 readiness 门槛未通过，其仓库最小修补与测试已完成，候选版本提升、构建、部署和现场复测尚未授权；数据节点及资源/迁移故障未授权
+> 状态：G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集与 G4-B2b-1 Redis 中断恢复已通过；G4-B2b-2a PostgreSQL 暂停/恢复已执行但 readiness 门槛未通过，其仓库最小修补、`ext.3` 版本提升与本地 ARM64 候选构建已完成，节点分发、部署和现场复测尚未授权；数据节点及资源/迁移故障未授权
 > 适用范围：Sub2API Docker Swarm 本地 ARM64 验证与后续 AMD64 生产环境
 > 基线日期：2026-07-27（Asia/Shanghai）
 
@@ -49,6 +49,8 @@ GoTask 不是长驻运维平台，不承担：
 | `CONFIRM` | 高风险任务的非敏感确认字符串 | `bootstrap-sub2api` |
 
 `CONFIRM` 不是密码。JWT/TOTP key、数据库/Redis 密码、Caddy storage encryption key 和 Provider 凭据不得放入 Task 变量、命令行、Git 或发布摘要，Task 只引用已创建的版本化 Swarm Secret 对象。
+
+当前仓库 VERSION 已进入 `v0.1.165-ext.3` 候选审核期，但活动 `local-arm64/cluster.env`、节点镜像和 service 仍固定 `v0.1.165-ext.2`。这是有意保留的发布/部署分离状态：获得部署授权前不得更新活动清单或调用 `images:distribute-local`、`release:apply`；当前 checkout 的 `validate:stack ENV=local` 会因版本不一致按门禁失败，不得修改校验逻辑绕过。表中的 `RELEASE=v0.1.165-ext.2` 仍表示当前活动环境。
 
 ## 3. 安装与基本命令
 

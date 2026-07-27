@@ -122,4 +122,4 @@ multipass exec node3 -- <command>
 - PostgreSQL task `b5ysani4aye7gl2gbpxwv03v6`、container ID、volume `sub2api-local_postgres_data`、三个 Sub2API/Caddy task 均未变化；`schema_migrations` 恢复前后均为 236 条、236 个唯一 filename、0 个空 checksum；
 - 最终 `release:verify ENV=local` 通过，Sub2API/Caddy 为 `3/3`，PostgreSQL/Redis 为 `1/1`，Sub2API panic/fatal 为 0。
 
-当前证据表明 Caddy/Swarm 外层 probe 能 fail-closed，但应用的 PostgreSQL `PingContext` 未在既定 2 秒预算内返回。仓库已经严格在 `backend/extends/lifecycle/manager.go` 与 `manager_test.go` 内完成单 in-flight probe、caller 硬超时修补和测试，但 `backend/extends/VERSION`、镜像与三个节点的运行态仍为 `ext.2`，尚未部署或复测；因此 `G4-B2b-2a` 门槛仍未通过。获得候选发布、部署和现场复测的后续独立授权前，不重复 PostgreSQL 故障注入；本记录也不覆盖 PostgreSQL 进程重启、volume 重挂载、数据节点停止、备份恢复、OOM、migration 失败或生产故障域。
+当前证据表明 Caddy/Swarm 外层 probe 能 fail-closed，但应用的 PostgreSQL `PingContext` 未在既定 2 秒预算内返回。仓库已经严格在 `backend/extends/lifecycle/manager.go` 与 `manager_test.go` 内完成单 in-flight probe、caller 硬超时修补和测试，并在 macOS 本机形成 `v0.1.165-ext.3-arm64` 候选；候选尚未加载到任何 Multipass 节点，活动清单、镜像与三个节点的运行态仍为 `ext.2`，因此 `G4-B2b-2a` 门槛仍未通过。获得候选分发、部署和现场复测的后续独立授权前，不重复 PostgreSQL 故障注入；本记录也不覆盖 PostgreSQL 进程重启、volume 重挂载、数据节点停止、备份恢复、OOM、migration 失败或生产故障域。
