@@ -58,6 +58,8 @@ multipass exec node3 -- <command>
 | Sub2API | `sub2api-local/sub2api:v0.1.165-ext.1-arm64` | `150e648aeefec2cd541807bb726e9ca4b4c243f4f1cf639045d50ce49a51da39` | `sha256:658b62d53062a22140670a40622b65f69432c7f32293113e2960c74b826e1e04` |
 | Caddy | `sub2api-local/caddy:v2.11.4-redis-v1.8.1-arm64` | `cc8f05e47661ca5b41998b884831abc8e126082cf9ed697cd82fdc56d9c92ff2` | `sha256:26a85a756bcbd9d2f94d9bc55e48fce85ee55cf181b6002a3c82e1292504b739` |
 
+阶段 3 候选 `sub2api-local/sub2api:v0.1.165-ext.2-arm64` 已加载到 node1，但尚未更新正式 service。它固定到 commit `9aca50a8fd1ad34de6ef6ecf08eb58800a19fa89`，source image ID 为 `sha256:d6f956d592de70534e0c94fcff4199515dda555acc6f6ccef6405099daff5539`，归档 SHA-256 为 `3e1c69b1d96417acbd615ca7d48b8dbda60f070e65ccb6c0f80c59a095acae70`，node1 image ID 为 `sha256:bb638caa30eac89bf8bb5ee6395361f941f83fc0f810150249901ba896561703`。三个隔离容器的全新数据库并发 bootstrap 已通过，临时容器、数据库和 Redis DB 15 均已清理。
+
 本地 Stack 以 host mode 发布 Sub2API `8080` 供同节点 Caddy 访问，因此该端口也可从 Multipass 宿主机到达。本次测试环境已明确接受该安全例外；生产准入前必须通过防火墙或等价网络约束禁止绕过 Caddy。
 
 该基线只用于同一台 macOS 宿主机上的编排验证，不证明跨物理故障域高可用。

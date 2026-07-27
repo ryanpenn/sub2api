@@ -4,7 +4,7 @@
 > 创建日期：2026-07-26  
 > 更新日期：2026-07-27
 > 节点信息来源：[`Multipass-Nodes.md`](./Multipass-Nodes.md)  
-> 当前边界：G1 已生成发布链和 `deploy/cluster` 骨架，G2 已发布 private GHCR 双架构制品，G3 已完成三 manager、共享 PostgreSQL/Redis、一次性 bootstrap 与 node1 单副本 TLS 基线；当前不修改 Sub2API 运行时代码、不启用 node2/node3 应用副本、不执行 G4 故障演练、生产部署、数据迁移或切流
+> 当前边界：G1 已生成发布链和 `deploy/cluster` 骨架，G2 已发布 private GHCR 首版双架构制品，G3 已完成三 manager、共享 PostgreSQL/Redis、一次性 bootstrap 与 node1 单副本 TLS 基线；阶段 3 多实例前置收敛及 `v0.1.165-ext.2` 本地候选验证已通过，但正式 Swarm service 仍为 `ext.1`；当前不启用 node2/node3 应用副本、不执行 G4 故障演练、生产部署、数据迁移或切流
 
 ## 1. 文档目的
 
@@ -151,7 +151,7 @@
 | 模型价格快照 | 已确认 | 经审计的 `model_pricing.json` 使用版本化 Swarm Config，只读挂载到三个副本；本地第一期关闭远程同步，仅使用该 Config；生产准入时远程数据和 hash URL 必须固定到与快照一致的不可变上游 revision，不跟随 `main` 漂移 |
 | 模型价格更新 | 已确认 | 创建新价格 Config 并更新 service 引用；无需重建应用镜像，以 `parallelism: 1`、`order: stop-first` 和 `failure_action: pause` 更新，发布流程逐副本验证 `/ready` |
 | 滚动更新可用性 | 已确认边界 | 不整体停服，通常仍有另外两个副本提供集群容量；但本机 Caddy 不跨节点转发且当前不做 DNS 摘除，被更新节点存在短暂请求失败或重连窗口，不承诺逐节点零中断 |
-| 扩展代码目录 | 已建立元数据边界 | fork 根目录 `backend/extends` 已创建，当前仅含非运行时 `VERSION`；多实例安全运行时修补尚未实施 |
+| 扩展代码目录 | 已按边界实施 | fork 根目录 `backend/extends` 包含独立 `VERSION`、Redis OAuth SessionStore 与最小 lifecycle manager；薄接入点已逐项登记，没有新增实体、开关或通用扩展框架 |
 | 集群部署目录 | 已完成 G1/G2/G3 | fork 根目录 `deploy/cluster` 已创建 Stack、双环境模板、Caddyfile、GoTask 契约和本地归档分发任务；G2 已回填平台 digest，G3 已完成 node1 单副本，生产占位域名/IP及容量门槛仍会阻止未完成输入进入部署 |
 | 发布/运维入口 | 已完成 G1/G2/G3 | 在 `deploy/cluster` 内使用 GoTask 提供统一命令入口；GoTask 不是长驻控制面，不承担 RBAC、Secret 存储、监控、分布式锁或审批。根 Taskfile、分组 Taskfile 和 GHCR manifest 提升脚本已创建并静态验证；G3 已通过同一入口完成本地归档分发、bootstrap、Stack apply 与 verify |
 | 原项目改动原则 | 已确认 | 遵循最小改动原则；优先新增文件，确需修改原文件时只保留最小接入改动 |
@@ -405,7 +405,7 @@ curl --noproxy '*' --cacert /tmp/sub2api-caddy-root.crt \
   --resolve sub2api.test:443:192.168.252.4 https://sub2api.test/health
 ```
 
-当前已部署的 `v0.1.165-ext.1` 单副本基线仍可用 `/health` 验证域名、TLS 和代理链路。阶段 3 分支已实现 `/ready`，下一候选镜像发布后必须以相同方式补做 readiness 验收，不能在旧镜像上提前切换运行态探针。
+当前已部署的 `v0.1.165-ext.1` 单副本基线仍可用 `/health` 验证域名、TLS 和代理链路。`v0.1.165-ext.2` 候选已经实现并在三个隔离进程上验证 `/ready`；正式 service 尚未滚动更新，因此不能在旧 service 上提前切换运行态探针。
 
 首次签发完成后，从任一 Caddy 的本机 admin API 导出 Local CA 根证书。admin API 只监听节点回环地址，不向局域网或公网开放：
 
@@ -1272,6 +1272,8 @@ task ops:node-status
 
 阶段 3 保持 `node1` 单副本 Swarm 基线；多进程语义通过单元、进程级集成和协议级 stub/mock 验证，不提前启用 `node2`/`node3` 应用副本。
 
+2026-07-27 实施结果：阶段 3 已通过。`v0.1.165-ext.2` 固定到 fork commit `9aca50a8fd1ad34de6ef6ecf08eb58800a19fa89`；ARM64 候选经 source image ID、归档 SHA-256 与 node1 image ID 三重校验后，用一个全新 PostgreSQL 数据库并发启动三个隔离容器，3.497 秒内全部返回 JSON `/ready`。最终 236 个 migration 文件对应 236 条唯一记录，checksum 异常和重复 filename 均为 0；并发 bootstrap 最终恰好创建 1 个管理员，另外两个实例幂等跳过。验证容器和临时数据均已清理，正式 Swarm service 仍为 `v0.1.165-ext.1`，未进入阶段 4。
+
 输出：
 
 - 多实例状态盘点与必要改造清单；
@@ -1551,7 +1553,7 @@ task ops:node-status
 | 2026-07-26 | 全新部署，暂不迁移旧数据 | 已确认 | 使用新的数据目录/卷 |
 | 2026-07-26 | 当前不处理 DNS 故障节点摘除 | 已确认 | 作为已知边界保留 |
 | 2026-07-26 | 基于原项目 fork 进行二次开发并按需同步上游 | 已确认并已建立仓库基线 | 当前 `origin` 指向 `ryanpenn/sub2api`，`upstream` 指向 `Wei-Shaw/sub2api`；同步仅由人工发起，代码修补尚未实施 |
-| 2026-07-26 | 多实例安全实现集中在 `backend/extends` | 已建立元数据边界 | 目录已创建且当前仅含 `VERSION`；运行时修补尚未实施，后续 ext 实现及其实现测试不得散落，原包私有行为和薄接入测试按 test-only 例外就地新增 |
+| 2026-07-26 | 多实例安全实现集中在 `backend/extends` | 已实施并保持边界 | Redis OAuth SessionStore 与 lifecycle manager 位于 `extends`；原包仅保留必要 Wire/router/handler/service 薄接入和 test-only 回归测试 |
 | 2026-07-26 | 接受 `extends` 目录白名单例外 | 已确认 | 允许必要 schema/migration/生成代码、最小注册和多实例安全参数位于既有目录；前端当前不纳入，逐项登记差异 |
 | 2026-07-26 | `extends` 采用统一接入点和单向依赖 | 已确认 | Wire/router 各一个薄接入点；适配新增文件优先；核心 domain/service 不依赖 `extends` |
 | 2026-07-26 | 上游同步采用临时分支 merge | 已确认 | 验证后合并回自有 `main`；共享分支禁止 rebase/force-push，个人未共享分支可 rebase |
@@ -1566,7 +1568,7 @@ task ops:node-status
 | 2026-07-26 | 并发槽启动清理采用现有 TTL 最小修补 | 已确认 P0 | 不跨 prefix 误删、不无条件删除共享等待计数；不新增 owner 实体或 heartbeat |
 | 2026-07-26 | 图片并发保持每副本本地 limiter | 已确认证据门槛 | 不增加 Redis 集群总计数；统一启用和参数；同步/异步复用路径与 Batch 不重复接入，只有具体高内存入口失败测试成立时才最小补齐 |
 | 2026-07-26 | 分离 liveness/readiness 并增加排空 | 已确认 | `/health` 保留，ext 增加 `/ready` 和进程内 draining；退出窗口可配置并与 Swarm `stop_grace_period` 对齐 |
-| 2026-07-27 | 完成阶段 3 代码收敛 | 待提交审核 | Redis OAuth SessionStore、启动槽清理、`/ready`、40 秒排空、WebSocket 1012、两个已证实图片 limiter 遗漏及 Scheduled Test leader lock 已完成；未构建/部署新镜像，未授权阶段 4 |
+| 2026-07-27 | 完成阶段 3 多实例前置收敛 | 已通过 | Redis OAuth SessionStore、启动槽清理、`/ready`、40 秒排空、WebSocket 1012、两个已证实图片 limiter 遗漏及 Scheduled Test leader lock 已完成；`ext.2` 候选和三进程全新数据库 bootstrap 已验证，正式 service 未更新，未授权阶段 4 |
 | 2026-07-26 | WebSocket 采用进程内登记与到期重连 | 已确认第一期最小范围 | draining 拒绝新 upgrade；已有连接可继续到窗口结束并在到期发送 `1012 Service Restart`；第一期不识别当前/new turn，不迁移连接，不使用 Redis 或新增实体 |
 | 2026-07-26 | WebSocket 连接绑定状态保持进程内 | 已确认 | 重连建立新连接，不跨副本续接未完成 turn；仅确需跨请求/副本读取的状态复用现有 Redis，不新增实体 |
 | 2026-07-26 | 保留应用启动 migration 并由 PostgreSQL 锁串行化 | 已确认 | 不新增 migration Job/ext；三个副本可同时启动但不能同时执行 SQL；失败或超时副本不进入 ready，具体超时、`*_notx.sql` 恢复和 forward-only 回滚门槛见第 6.4.1 节 |

@@ -11,9 +11,9 @@
 
 本文把已经完成的多节点部署方案拆解为可执行、可验证、可停止和可回滚的实施步骤。阶段编号严格沿用方案文档第 7 节：阶段 0 至阶段 5。
 
-当前已完成 `G1` 仓库侧实施、`G2` 制品发布与 `G3` 本地单副本基线。后续仍不执行下列操作：
+当前已完成 `G1` 仓库侧实施、`G2` 首版制品发布、`G3` 本地单副本基线和阶段 3 多实例前置收敛。后续仍不执行下列操作：
 
-- 不修改 Sub2API 运行时代码，不实施阶段 3 的多实例安全修补；
+- 不继续扩大阶段 3 运行时代码范围；新增修补仍须先有失败证据并重新审核白名单；
 - 不执行 G4 的 task kill、节点/依赖中断、OOM 或受控 migration 失败演练；
 - 不启用 node2/node3 的 Sub2API/Caddy 正式副本；
 - 不执行生产部署、真实数据迁移或切流；
@@ -46,10 +46,10 @@
 | G1 实施提交链 | `4077dd769f54e69cd8a6acec6b44ad5e322ba4d9`（静态骨架）→ `08825263b6b04e72e8bba45273d406969a900aac`（private GHCR 发布面收敛）→ `2842f9ba729dae6d6d7d58e1881a92730108286b`（关闭最终发布阻断）→ `5779d0b4b0d7b4821f2283afd667598380343386`（G1 文档闭环）；最终 CI `30206791653`、Security Scan `30206791734` 均通过 |
 | upstream 基线 commit | `2730c1c43b29be003925b033f3f9e645e726bb8c` |
 | upstream VERSION | `backend/cmd/server/VERSION = 0.1.165` |
-| fork VERSION | `backend/extends/VERSION = ext.1`；历史 fork tag 在 G2 前为空 |
-| 组合版本 | `0.1.165-ext.1`；annotated tag `v0.1.165-ext.1` 已固定到 `5779d0b4b0d7b4821f2283afd667598380343386` |
-| `backend/extends` | 已创建，仅含 `VERSION`；尚未增加任何运行时代码或新功能 |
-| `deploy/cluster` | 已创建 G1 静态骨架、通用 Stack、两套环境档、Caddyfile 和 GoTask 契约 |
+| fork VERSION | `backend/extends/VERSION = ext.2`；独立递增，不随 upstream 重置 |
+| 组合版本 | `0.1.165-ext.2`；annotated tag `v0.1.165-ext.2` 固定到 `9aca50a8fd1ad34de6ef6ecf08eb58800a19fa89`，tag object 为 `6651806af0e8bf5415d63c9be2f27e2839a7ffe0` |
+| `backend/extends` | 已完成 Redis OAuth SessionStore 与最小 lifecycle manager；没有新增实体、功能开关或通用扩展框架 |
+| `deploy/cluster` | 已创建通用 Stack、两套环境档、Caddyfile 和 GoTask 契约；本地候选清单已固定 `v0.1.165-ext.2` ARM64 归档身份 |
 | release workflow | 唯一入口为 GHCR-only `workflow_dispatch`；只读组合双 VERSION并校验已有 tag，任何 digest push 前要求已有 package 为 private 或确认尚不存在，push 后再次确认 private 才提升三个不可变 tag；不创建 GitHub Release、不发布 Docker Hub、不发送通知 |
 | GoReleaser | 两份兼容配置只保留本地制品构建及完整 fork `main.Version`、`Commit/Date/BuildType` 注入，不包含 `dockers`、`docker_manifests` 或其他 registry publisher；集群发布不调用 GoReleaser |
 | G1 工具版本 | Go `1.26.5`、Docker Client `29.6.1`、GoTask `3.50.0`、GoReleaser `2.17.0`、actionlint `1.7.7` |
@@ -90,7 +90,7 @@ flowchart LR
 | 0. 需求冻结与架构决策 | 已完成 | 方案设计审核 | 本地设计项确认、实施计划形成 |
 | 1. 节点与基础设施基线 | 已完成 | `G1`；涉及 GHCR/节点时再分别取得 `G2/G3` | 发布链、制品、配置骨架和三 manager 基线通过 |
 | 2. 数据服务与单副本基线 | 已完成 | 阶段 1 通过且已取得 `G3` | PostgreSQL/Redis、单次 bootstrap、单副本与本机 Caddy 基线通过 |
-| 3. 多实例前置收敛 | 未开始 | 阶段 2 通过且代码修补范围再次确认 | 必要 P0 修补、进程级测试和静态验证满足门槛；不启用 `node2`/`node3` 应用副本 |
+| 3. 多实例前置收敛 | 已完成 | 阶段 2 通过且代码修补范围再次确认 | 必要 P0 修补、进程级测试、候选制品和三进程冷启动满足门槛；未启用 `node2`/`node3` 应用副本 |
 | 4. 三副本与故障演练 | 未开始 | 阶段 3 通过且已取得 `G4` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
 | 5. 环境交付 | 未开始 | 阶段 4 通过 | 交付物、限制和验收报告完成并取得 `G5` |
 
@@ -412,7 +412,7 @@ deploy/cluster/
 
 - [x] 通过 migration runner 的并发 session/锁重试测试确认同一 advisory lock 串行执行 migration SQL；本阶段未启用三个 Swarm 副本；
 - [x] 获锁后重新核对 `schema_migrations`/checksum，不重复执行的测试通过；
-- [ ] 对全新数据库执行三次冷启动，记录锁等待、SQL 和总耗时；最慢不得超过 5 分钟；
+- [x] 使用一个全新 PostgreSQL 数据库同时启动三个隔离容器：3.497 秒内全部 `/ready=200`；236 个 migration 文件恰好形成 236 条唯一记录，checksum 格式异常和重复 filename 均为 0；
 - [x] 事务 migration 失败回滚、锁上下文超时和未完成初始化不进入 `/ready` 的单元/协议测试通过；
 - [x] `*_notx.sql` 无效索引检查、受控清理、相同 checksum 重试和 execution mode 测试通过；未修改 migration 记录或业务数据；
 - [x] 本阶段没有 schema/migration 变化，兼容性结论为 `backward-compatible`；
@@ -424,10 +424,10 @@ deploy/cluster/
 
 - [x] 两套 Caddyfile 均阻断在线更新检查、可回滚版本查询、原地更新和原地回滚接口；
 - [x] `/api/v1/admin/system/version` 保持可访问，并由现有 BuildInfo 返回完整 fork 版本；
-- [ ] 验证没有发布的 Sub2API 端口可绕过 Caddy；
+- [x] 本地继续采用已审核的 host-mode `8080` 测试例外，未把它误判为已关闭；生产准入仍由防火墙或等价网络约束阻断绕过路径，不在阶段 3 增加网络控制面；
 - [x] 完成目标单元测试、进程级并发测试及 OAuth/WebSocket 协议级 stub/mock；真实双/三副本测试仍留在阶段 4；
 - [x] 沿用阶段 2 已验证的 Caddy shared Redis storage，并保留阶段 4 的跨节点证书协调/恢复测试步骤；
-- [x] `task validate:stack ENV=local` 与静态 Stack 渲染通过；新镜像尚未发布，因此未错误地执行指向旧 digest 的 `release:plan/apply`；
+- [x] `task validate:stack ENV=local` 与本地归档分发校验通过；候选镜像已加载 node1，但正式 Swarm service 仍固定 `v0.1.165-ext.1`，未提前执行 `release:apply`；
 - [x] 人工上游同步演练不作为本地退出门槛；同步仍由人工按需发起。
 
 ### 8.8 修改隔离白名单
@@ -471,32 +471,38 @@ deploy/cluster/
 - [x] 未增加无关功能、功能开关、实体、表或通用框架；
 - [x] 每项代码修补均有风险证据、修补测试和回归测试；
 - [x] 没有失败证据的图片入口和后台任务没有产生代码修改；
-- [ ] 版本、fork commit、Config/Secret 和 schema 兼容性可追溯；需要部署验证的镜像 digest 在取得 `G2` 后记录；
-- [x] 已在第 8.10 节形成“不改代码基线”与“必要最小改造”的差异清单；等待人工提交审核。
+- [x] `v0.1.165-ext.2`、fork commit、ARM64 source/node image ID、归档 SHA-256、既有 Config/Secret 和 `backward-compatible` schema 结论可追溯；AMD64 已完成同提交构建烟测但未推送 GHCR，不作为生产可部署 digest；
+- [x] 已在第 8.10 节形成“不改代码基线”与“必要最小改造”的差异清单并完成运行态复核。
 
 ### 8.10 阶段 3 实施记录（2026-07-27）
 
-当前状态：**代码与静态配置实施完成，等待提交审核；未进入阶段 4，未部署新镜像。**
+当前状态：**阶段 3 已通过；候选镜像只加载到 node1 并完成隔离验证，正式 Swarm service 未更新；未进入阶段 4。**
 
 | 风险证据 | 必要最小改造 | 验证 | 未增加内容 |
 | --- | --- | --- | --- |
 | `ProvideConcurrencyService` 启动即调用 cache-wide stale cleanup | 删除这一处启动调用，保留既有周期/TTL 回收 | provider 回归测试确认启动调用次数为 0 | 无 `extends/concurrency`、owner、heartbeat |
 | 五个 OAuth callback session 仅存进程内存 | 一个 typed Redis JSON store；五个 service 只持有各自最窄 interface | 跨 client 读取、TTL、namespace、state mismatch 保留、并发单次消费、Redis failure fail closed | 无粘性会话、DB 实体、生产内存 fallback |
 | `/health` 无条件 200，退出只等待 5 秒 | `/ready` 按需探测 DB/Redis；进程内 draining；40 秒 shutdown | liveness/readiness 分离、依赖失败、draining、配置边界测试 | 无后台探针框架、功能开关 |
+| 嵌入式前端 middleware 只 bypass `/health`，运行态把 `/ready` 截获成 SPA HTML 200 | 仅把 `/ready` 加入既有 bypass 列表 | embed 定向测试与候选容器返回 `{"status":"ready"}` | 无新 middleware、路由层或开关 |
 | `http.Server.Shutdown` 不管理 hijacked WebSocket | 最小进程内 connection registry；两个 upgrade 入口薄登记；窗口到期并行关闭 1012 | 真实协议关闭状态测试 | 无跨节点连接状态、turn state、Redis key |
 | WS 首个生图 turn 与 Gemini native `IMAGE` 绕过现有 limiter | 只在两个已证实入口复用同一个 `imageConcurrencyLimiter` | 拒绝第二个并发图片请求的目标测试 | 无新 limiter、集群总计数、Batch 改造 |
 | Scheduled Test 每个进程独立 `ListDue` 并执行外部测试 | 每轮复用既有 Redis leader lock + PostgreSQL advisory fallback | peer 持锁时零 `ListDue`、单 leader 一次 `ListDue` | 无 scheduler/leader facade/任务注册表 |
 
 验证记录：
 
+- 阶段 3 源码提交链为 `8b1aec5c0af16979434aac4c121e5927dba3ee96`（多实例前置收敛）→ `9aca50a8fd1ad34de6ef6ecf08eb58800a19fa89`（运行态发现的 `/ready` SPA bypass 最小修补）；
 - `cd backend && go test ./... -timeout=15m`：通过；
 - `cd backend && go test -race ./extends/...` 及并发槽/Scheduled Test 定向 race：通过；
 - OAuth、并发槽、Scheduled Test、readiness、WebSocket 1012、WS/Gemini limiter 目标测试：通过；
-- `task validate:stack ENV=local`：通过，local health path 已切换为 `/ready`；
+- embed 模式的 `/ready` bypass 定向回归：通过；首次候选冷启动发现 SPA 截获后以一行 bypass 修补闭环；
+- `task validate:stack ENV=local` 与 `task images:distribute-local ENV=local`：通过；local health path 已切换为 `/ready`；
+- annotated tag `v0.1.165-ext.2` 固定到 `9aca50a8fd1ad34de6ef6ecf08eb58800a19fa89`；ARM64 source image ID 为 `sha256:d6f956d592de70534e0c94fcff4199515dda555acc6f6ccef6405099daff5539`，归档 SHA-256 为 `3e1c69b1d96417acbd615ca7d48b8dbda60f070e65ccb6c0f80c59a095acae70`，node1 image ID 为 `sha256:bb638caa30eac89bf8bb5ee6395361f941f83fc0f810150249901ba896561703`；
+- AMD64 同提交构建烟测通过，source image ID 为 `sha256:da61f82e6ec3dee3c0e9b311e224f970fa5f7245aa652cc7ddfa105f594da0a8`；未推送 GHCR，不写入生产部署清单；
+- 全新数据库三进程并发 bootstrap 在 3.497 秒内全部 `/ready=200`；236/236 migration 唯一、0 checksum 异常、0 重复 filename，最终恰好 1 个管理员，另外两个实例幂等跳过；
 - `git diff --check`：通过；
-- 未执行新镜像构建、digest 固定、Swarm 更新、三副本或故障注入；这些动作仍需后续明确授权。
+- 验证容器、临时数据库、Redis DB 15 和临时归档均已清理；正式 Swarm service 仍为 `v0.1.165-ext.1`；未执行三副本、故障注入或生产发布。
 
-未关闭的阶段 3 运行态证据只有两项：一次性全新 PostgreSQL 的三次并发冷启动，以及生产/本地绕过 `8080` 的网络限制实测。前者应在新 ARM64 候选镜像发布后、进入三副本前执行；后者本地继续沿用已登记测试例外，生产准入仍必须由防火墙或等价网络约束关闭。因此本轮不能把 `G4` 标为通过。
+阶段 3 的本地退出门槛已经关闭。host-mode `8080` 在本地仍是已接受的测试例外，生产防火墙验证属于生产准入而非本阶段伪完成项。阶段 3 通过不等于 `G4` 授权，也不等于正式 service 已滚动到候选版本。
 
 ## 9. 阶段 4：三副本与故障演练
 
@@ -690,4 +696,4 @@ deploy/cluster/
 - [ ] 阶段 5 交付物是否足够；
 - [x] `G1/G2/G3` 已分别授权并完成；`G4` 未授权。
 
-当前 G0/G1/G2/G3 已通过；阶段 3 代码与静态配置已实施并等待提交审核，但尚未构建或部署新的候选镜像。下一步先审核本轮差异，再单独授权候选发布和一次性三进程冷启动证据；G4 仍未授权。
+当前 G0/G1/G2/G3 与实施阶段 0 至阶段 3 均已通过。下一步先审核 `v0.1.165-ext.2` 候选提交链、归档身份和三进程冷启动证据，再单独决定是否授权 `G4`；未授权前不添加 node2/node3 应用 label、不更新正式 service、不做故障注入。
