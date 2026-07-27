@@ -1,10 +1,10 @@
 # Sub2API 多节点部署方案
 
-> 状态：本地验证方案与 G1 至 G5 实施基线已完成；Sub2API restart condition 最小修正、node1/PostgreSQL 复测、单副本 OOM 和隔离 migration 失败均通过。当前三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个入口与 `release:verify ENV=local` 正常；生产容量、监控、DNS、真实数据迁移及灾难恢复按后续独立门槛补齐
+> 状态：本地验证方案与 G1 至 G5 实施基线已完成；生产准入专项首轮本地子集又完成了普通入口容量、入口偏斜、共享依赖压力、三节点 WebSocket、真实 `SIGTERM` 排空和 Redis 不可用时 Caddy 冷启动/恢复验证。当前三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个入口与 `release:verify ENV=local` 正常；真实 Provider 生图、Go heap/GC、证书续期协调、AMD64 生产容量、监控、DNS、真实数据迁移及灾难恢复仍按后续独立门槛补齐
 > 创建日期：2026-07-26  
 > 更新日期：2026-07-27
 > 节点信息来源：[`Multipass-Nodes.md`](./Multipass-Nodes.md)  
-> 当前边界：本地阶段 0 至阶段 5 已关闭。`ext.2` 暴露的 PostgreSQL readiness 偏差由 `backend/extends/lifecycle` 两文件修补并在 `ext.3` 复测通过；node1/PostgreSQL 首次整节点场景暴露的正常退出 task 不重建问题，仅由部署层把 Sub2API `restart_policy.condition` 改为 `any` 并增加既有渲染断言，受控滚动和修订门槛复测已通过。node3 单副本真实 cgroup OOM 自动恢复，隔离 migration checksum 故障未进入 ready 且未影响正式数据库。当前不执行生产部署、数据迁移、DNS 切流、容量定标或灾难恢复
+> 当前边界：本地阶段 0 至阶段 5 已关闭。`ext.2` 暴露的 PostgreSQL readiness 偏差由 `backend/extends/lifecycle` 两文件修补并在 `ext.3` 复测通过；node1/PostgreSQL 首次整节点场景暴露的正常退出 task 不重建问题，仅由部署层把 Sub2API `restart_policy.condition` 改为 `any` 并增加既有渲染断言，受控滚动和修订门槛复测已通过。node3 单副本真实 cgroup OOM 自动恢复，隔离 migration checksum 故障未进入 ready 且未影响正式数据库。生产准入首轮只完成本地可验证子集，当前不执行生产部署、数据迁移、DNS 切流、生产容量定标或灾难恢复
 
 ## 1. 文档目的
 
@@ -369,6 +369,10 @@ Caddy storage 与 Sub2API 业务 Redis 可以复用同一个 Redis 实例，但�
 | 一个节点触发续期 | 由共享锁保证同一时间只有一个实例执行，其他实例从 Redis 获取更新后的证书 |
 | 新增 Caddy 节点 | 使用相同 storage 和 Secret 后加载已有证书，不单独创建新的证书体系 |
 
+2026-07-27 的本地冷启动故障验证进一步确认了该边界：暂停 Redis 后，node1/node2 已经加载证书的 Caddy 仍能完成新 TLS 握手；此时终止 node3 Caddy，两个替代 task 均因 `provision caddy.storage.redis: i/o timeout` 以 exit 1 失败，node3 入口不可用。Redis 恢复后 Swarm 自动创建可用 task，三个入口恢复 200；Redis DB 1 仍为 15 个 key，key name set SHA-256 仍为 `8c59bdb6c96e954ab0b28d80c55c18c09e7ad3ed57992d7231c7a67c91a72ca8`，三个入口的证书 serial/指纹及有效期均未变化。结论是：Redis 故障通常不影响已经载入证书的存量 Caddy，但会阻断需要读取 shared storage 的冷启动节点；恢复 Redis 后可自动恢复且不会形成独立证书体系。
+
+该测试没有覆盖证书续期。Local CA 证书当时不在续期窗口，强行修改系统时间或为测试改写 Caddy 管理配置会扩大方案复杂度，因此续期锁、challenge 共享及续期后证书一致性仍须在生产 ACME staging 或自然续期窗口验证。
+
 #### 6.3.5 本地验证门槛
 
 1. 三个 Caddy 都能读写相同 Redis storage，并识别为同一证书集群。
@@ -376,7 +380,7 @@ Caddy storage 与 Sub2API 业务 Redis 可以复用同一个 Redis 实例，但�
 3. 仅保留一个节点首次触发内部 CA 签发，其余节点能够从共享 storage 加载相同证书和私钥指纹。
 4. 本机使用同一 Local CA 根证书，通过 `curl --resolve` 分别完成三个节点的 TLS 和 `/ready` 验证。
 5. 重启任意 Caddy 后不产生独立 CA 或重复证书体系，能够从 Redis 恢复证书。
-6. 在 Redis 短暂中断时记录已有 TLS 连接、新 TLS 握手、Caddy 重启和续期行为。
+6. Redis 短暂中断时的存量 TLS、新 TLS 握手以及 Caddy 冷启动失败/恢复行为已经记录；证书续期行为仍须单独验证。
 7. 重启 Redis 并重新挂载同一本地持久化目录后，三个节点仍能加载同一内部 CA 和站点证书；集群外备份恢复不属于第一期门槛。
 
 本地 Multipass 阶段不使用公共 DNS 或公网 ACME。公网证书签发、ACME challenge 和 DNSPod 多 A 在生产预演阶段另行验收。
@@ -620,6 +624,22 @@ Sub2API 同时设置 `GOMEMLIMIT=1536MiB`。最重的 `node1` hard limit 合计�
 - OOM 后重启、熔断、降载和容量恢复条件。
 
 至少采集容器 `memory.current`/`memory.peak`、OOM、Go heap/GC、活跃生图请求、请求/响应字节和请求时长，不能只依据 CPU 均值或 TCP 连接数判断容量。
+
+2026-07-27 已完成首轮本地容量与稳定性子集，结果如下：
+
+| 场景 | 并发配置 | 结果 | 结论边界 |
+| --- | --- | --- | --- |
+| 单入口 `/health` | node1 4 workers，6 秒 | `22605` 请求，`3751.9 req/s`，全部 200，p95 `2.009ms` | 只表示本地轻量 liveness 上限样本 |
+| 双入口 `/health` | 每节点 4 workers，6 秒 | 合计 `29558` 请求，`4924.1 req/s`，全部 200 | 两入口优于单入口，但不是生产扩展倍数 |
+| 三入口 `/health` | 每节点 4 workers，6 秒 | 合计 `19049` 请求，`3172.7 req/s`，全部 200，p95 `13.139ms` | 共享 Mac 宿主/虚拟化争用使吞吐下降，证明本地环境不能推导线性扩展 |
+| 单入口 `/ready` | node1 4 workers，6 秒 | `8022` 请求，`1335.9 req/s`，全部 200 | `/ready` 会访问共享 PostgreSQL/Redis |
+| 双/三入口 `/ready` | 每节点 2 workers，5 秒 | 双入口 `2312.9 req/s`；三入口 `1170.4 req/s`，全部 200 | 并发配置和共享依赖争用必须与结果一起记录 |
+| 偏斜入口 `/ready` | workers 比例 4:1:1，5 秒 | node1/node2/node3 分别 `3149/1005/822` 请求，全部 200 | 最热副本约承担 63.3% 请求，DNS/入口不均会形成单点热点 |
+| 三节点 WebSocket | 每入口 1 条，保持 12 秒 | 三个入口均 `101 Switching Protocols` 且连接存活 | 证明无 Provider 的协议入口与长连接基线，不代表生成业务吞吐 |
+
+本轮压力前后 PostgreSQL 增加 `41963` 次 commit、`713` 次 block read、`1918182` 次 block hit，没有新增 rollback 或 temp file；Redis 最终 `rejected_connections=0`。Docker/cgroup 还记录了各服务内存、网络和块 I/O，已有单副本 OOM 演练及图片 limiter 的满载/等待队列/429 单元与 race 测试证明资源限制和有界拒绝语义。当前没有配置真实 Provider，应用也没有现成 Go heap/GC 指标端点，因此没有真实生图 payload/吞吐或 Go runtime 曲线；遵循最小改造原则，本地专项不为采样额外增加 telemetry 端点。
+
+真实 `SIGTERM` 子集也已完成：node3 旧进程收到信号后，既有 WebSocket 在 5 秒观察窗内继续存活，新直连请求停止接受；客户端结束后容器以 exit 0 退出，Swarm 自动补回并通过最终验证。实机没有 Provider-backed 请求可保持到完整排空窗口，故 WebSocket 到期 `1012 Service Restart` 仅由对应单元/race 测试确认，HTTP/SSE 业务排空仍待真实 Provider 专项。
 
 容量结论需要分别报告：
 
@@ -1498,7 +1518,7 @@ task ops:node-status
 24. **Caddy 运行方式（已确认）**：Caddy 使用 Swarm `global` service；每个 `caddy=true` 节点运行 1 个 host-network task，直接绑定 `80/443`，通过 Swarm Config/Secret 获取配置，不运行 systemd Caddy、不挂载 Docker Socket、不使用 routing mesh。
 25. **本地 TLS（已确认）**：使用 `sub2api.test` 和 Caddy `tls internal`；命令行通过 `curl --resolve` 精确访问各节点并使用同一 Local CA 根证书，浏览器按需使用单条 `/etc/hosts` 映射和 macOS System Keychain；公网 ACME 留到生产预演。
 26. **镜像版本与仓库（已确认）**：活动 Sub2API 为 `v0.1.165-ext.3`；annotated tag 已固定到版本提交 `6c859d2d8`，tag object 为 `de000a7f6ed506b76b10384da8301dc18c485637`。ARM64 source image ID 为 `sha256:03e01bbd24c1818ac1f8ad9ec6413969ed9e6e69a524cb2795f993ed756da6aa`，归档 SHA-256 为 `43d69c5fa76eb0f3c809a97251f2eee3477c04cb5324d6449fea6b6bb67b1f6c`，三节点 node image ID 均为 `sha256:fd867fc19da56a25bae98930d2186159f3650a83cc5cefb99164ae4951f01a6f`；未上传 GHCR，`ext.2` 继续作为已验证回滚输入。Caddy 为 `v2.11.4`（commit `e2eee6a7fce366321294c9c2a79f3146891dcbdf`），Redis storage module 为 `v1.8.1`（commit `230a32809cc4016427db0c11c925d703132941b1`）。生产发布到两个私有 GHCR package 并固定平台子镜像 digest；Multipass 本地以三重校验的 ARM64 归档上传，不配置 registry 凭据。当前不考虑签名，不使用其他 registry、`latest` 或未核验制品。
-27. **容量目标（已确认分阶段）**：生产首期 3 台等规格 AMD64 集群节点，每台不少于 16G 内存和 200M 公网带宽；Caddy reservation 不低于 `1G`，PostgreSQL/Redis 各不低于 `2G`，Sub2API 必设统一 memory hard limit。具体生产 limit、Sub2API reservation、`GOMEMLIMIT`、CPU、磁盘、连接池、普通并发、SSE/WS 连接数、并发生图数、队列/拒绝门槛、最大请求/响应大小和服务目标明确延期到生产峰值分析及 AMD64 单/三副本压测，不阻塞本地阶段 0/1，但完成“容量与可观测性补充方案”前禁止认定生产就绪或切流。当前 4G Multipass 已确认不扩容，本地档固定为 Caddy `128MiB/256MiB`、PostgreSQL `512MiB/768MiB`、Redis `256MiB/512MiB`、Sub2API `512MiB/2GiB`（reservation/hard limit）及 `GOMEMLIMIT=1536MiB`，且不做容量验收。
+27. **容量目标（已确认分阶段）**：生产首期 3 台等规格 AMD64 集群节点，每台不少于 16G 内存和 200M 公网带宽；Caddy reservation 不低于 `1G`，PostgreSQL/Redis 各不低于 `2G`，Sub2API 必设统一 memory hard limit。具体生产 limit、Sub2API reservation、`GOMEMLIMIT`、CPU、磁盘、连接池、普通并发、SSE/WS 连接数、并发生图数、队列/拒绝门槛、最大请求/响应大小和服务目标明确延期到生产峰值分析及 AMD64 单/三副本压测，不阻塞本地阶段 0/1，但完成“容量与可观测性补充方案”前禁止认定生产就绪或切流。当前 4G Multipass 已确认不扩容，本地档固定为 Caddy `128MiB/256MiB`、PostgreSQL `512MiB/768MiB`、Redis `256MiB/512MiB`、Sub2API `512MiB/2GiB`（reservation/hard limit）及 `GOMEMLIMIT=1536MiB`；已记录的短时容量样本只用于暴露热点和共享依赖争用，不作为生产容量验收。
 28. **S3 与恢复目标（已确认分期）**：上游已有 S3 兼容接口，第一期保持未配置/禁用，不新增接口、实体、SDK、`extends` 代码或备份 service，也不以既定 RPO/RTO 验收；后续目标仍为 PostgreSQL `RPO<=15m`/`RTO<=4h`、Redis/Caddy storage `RPO<=1h`/`RTO<=4h`，具体存放位置、保留期和演练周期另行确认。
 29. **GoTask 发布/运维入口（已确认）**：只作为 `deploy/cluster` 内的薄 CLI 编排层，不引入长驻控制面或新实体；最小目录包含根 Taskfile、`taskfiles/{validate,release,images,ops}.yml`、`stacks/`和 `env/{local-arm64,production-amd64}/`，其中 `images` 仅负责本地归档分发校验，不预建空 `scripts/`；首期 `ops` 只含状态、日志和节点检查，drain/undrain 自动化延期。
 30. **Secret 与配置（已确认）**：Config 固定使用 `sub2api-{env}-{purpose}-{sha12}`，Secret 固定使用 `sub2api-{env}-{purpose}-vNNN`，环境名为 `local` 或 `production`；Secret 不记录内容摘要。只有消费范围不同的敏感值才拆分，JWT/TOTP 默认收敛在 `app-config`，数据库/Redis/Caddy storage 凭据按消费者边界拆分；本地使用全新值且不做外部备份，丢失时重建，生产启用前必须确定独立加密保管位置。对象不原地覆盖，默认保留一个可用旧版本用于回滚；数据库/Redis 凭据先新增、切换并验证再撤销旧值；JWT/TOTP/Caddy storage key 不做普通自动轮换。Provider 凭据按需注入且不进入 Git，发布记录只保存 Secret 名称/object ID、消费者和时间；`Multipass-Nodes.md` 只对节点登录测试密码保留明文例外。
@@ -1506,7 +1526,7 @@ task ops:node-status
 32. **本地可观测性（已确认）**：第一期不部署 Prometheus/Grafana/Loki 等常驻组件；使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据和 PostgreSQL/Redis 原生查询，以 `request_id + node + replica` 关联链路，由 GoTask 提供只读状态、日志和采样命令并形成验收记录。生产指标后端、日志集中化、保留期、告警阈值、值班和升级流程纳入生产准入前的“容量与可观测性补充方案”，当前不预设技术选型。
 33. **Swarm 节点角色（已确认）**：`node1`、`node2`、`node3` 固定作为 manager 并保留 worker 能力，以维持三个 manager 的 quorum 并演练单 manager 故障；后续容量扩展节点全部只作为 worker 加入，不把 manager 扩展到 3 个以上。原 manager 永久失效时从合格 worker 中晋升替代节点，只恢复到三个 manager。
 34. **实施产物（已完成 G3）**：ARM64/AMD64 GHCR 平台 digest、本地 ARM64 source/node image ID 与归档 SHA-256 均已回填；发布 tag、fork commit、构建输入、镜像身份和 workflow run 可追溯。
-35. **当前授权与交付**：本地设计及 G1 至 G5 实施基线均已完成。`backend/extends` 的代码范围仍只包含有失败证据的多实例安全修补；node1/PostgreSQL 首次未通过后，部署层仅把 Sub2API `restart_policy.condition` 从 `on-failure` 改为 `any` 并在既有 `validate:stack` 加四 service 断言，30/50/60 秒门槛复测通过。单副本 OOM 与隔离 migration checksum 故障也已完成，正式 volume、PostgreSQL `236/236/0/0`、Redis/Caddy storage 和 TLS 身份无漂移。G5 只确认本地 ARM64 实施基线；不授权上传 GHCR、生产部署、DNS、真实迁移或切流，也不能外推为 `--force`、断电、磁盘损坏、VM 重建、跨节点/备份恢复、Redis 持续不可用时 Caddy 冷启动、证书续期协调或生产 HA 已通过。
+35. **当前授权与交付**：本地设计及 G1 至 G5 实施基线均已完成。`backend/extends` 的代码范围仍只包含有失败证据的多实例安全修补；node1/PostgreSQL 首次未通过后，部署层仅把 Sub2API `restart_policy.condition` 从 `on-failure` 改为 `any` 并在既有 `validate:stack` 加四 service 断言，30/50/60 秒门槛复测通过。单副本 OOM 与隔离 migration checksum 故障也已完成，正式 volume、PostgreSQL `236/236/0/0`、Redis/Caddy storage 和 TLS 身份无漂移。G5 只确认本地 ARM64 实施基线；后续生产准入首轮本地子集又验证了普通入口/长连接、热点、共享依赖、真实 `SIGTERM` 以及 Redis 不可用时 Caddy 冷启动失败与恢复。当前仍不授权上传 GHCR、生产部署、DNS、真实迁移或切流，也不能外推为 `--force`、断电、磁盘损坏、VM 重建、跨节点/备份恢复、证书续期协调、真实 Provider 容量或生产 HA 已通过。
 
 ## 10. 计划产物
 
@@ -1595,7 +1615,9 @@ task ops:node-status
 | 2026-07-27 | 完成 G4-B2b-2b-2-fix 与 fix-deploy | 已通过 | 严格只修改 Stack 中 Sub2API condition 与既有 `validate:stack` 四 service 断言，先 RED 后 GREEN；local/production-amd64 渲染通过。运行态只执行 `restart-condition=any` 的受控滚动，`07:35:01Z–07:36:42Z` 完成，其他 service 与 ForceUpdate 保持不变，三个入口和 `release:verify` 通过 |
 | 2026-07-27 | 完成 G4-B2b-2b-2-retest | 已通过，保留首次失败与一次无效采样记录 | 有效复测中 stop 返回后 0 秒确认 quorum/唯一 Leader，15 秒出现无 NODE、placement 失败的 PostgreSQL Pending task并立即恢复；两个存活应用 `/health=200`、直连 `/ready=503` 约 2.01–2.04 秒，12 秒内完整恢复。Sub2API task 由 `condition=any` 自动补齐，四项 service spec、PostgreSQL/Redis/Caddy storage/TLS 身份和最终 `release:verify` 均通过 |
 | 2026-07-27 | 完成 G4-B2c 单副本 OOM 与隔离 migration 失败 | 已通过（本地故障边界） | node3 cgroup 达到 2 GiB，记录 `oom=1/oom_group_kill=1`，原容器 `OOMKilled=true/exit=137`，另外两个入口全程 200，node3 约 11 秒恢复。隔离数据库中的错误 `001_init.sql` checksum 使临时 task exit 1 且从未 ready，正式 migration 保持 `236/236/0/0`，临时 service/Secret/数据库全部清理 |
-| 2026-07-27 | 完成 G5 本地实施基线交付确认 | 已通过 | 最终三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1` 与三个 HTTPS `/ready` 正常；完整容量定标、Redis 不可用时 Caddy 冷启动/续期、AMD64 生产部署、DNSPod、真实迁移、备份恢复和生产监控明确延期，不外推为生产 HA |
+| 2026-07-27 | 完成 G5 本地实施基线交付确认 | 已通过 | 最终三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1` 与三个 HTTPS `/ready` 正常；当时完整容量定标、Redis 不可用时 Caddy 冷启动/续期、AMD64 生产部署、DNSPod、真实迁移、备份恢复和生产监控明确延期，不外推为生产 HA |
+| 2026-07-27 | 完成生产准入专项首轮本地容量与排空子集 | 部分通过 | 普通入口单/双/三节点、4:1:1 热点、共享 PostgreSQL/Redis 压力、三节点 WebSocket 和真实 `SIGTERM` 已验证；资源限制与有界 429 测试通过。没有 Provider 和 Go runtime 指标，因此真实生图、provider-backed HTTP/SSE/WS 排空、Go heap/GC 与 AMD64 定标仍未完成 |
+| 2026-07-27 | 完成 Redis 不可用时 Caddy 冷启动边界 | 已通过冷启动/恢复子集 | 存量 Caddy 继续 TLS，冷启动 Caddy 因 Redis storage timeout 失败；Redis 恢复后自动启动并加载相同 15 个 storage key 与同一证书。证书续期协调仍待生产 ACME staging 或自然续期窗口 |
 | 2026-07-26 | WebSocket 采用进程内登记与到期重连 | 已确认第一期最小范围 | draining 拒绝新 upgrade；已有连接可继续到窗口结束并在到期发送 `1012 Service Restart`；第一期不识别当前/new turn，不迁移连接，不使用 Redis 或新增实体 |
 | 2026-07-26 | WebSocket 连接绑定状态保持进程内 | 已确认 | 重连建立新连接，不跨副本续接未完成 turn；仅确需跨请求/副本读取的状态复用现有 Redis，不新增实体 |
 | 2026-07-26 | 保留应用启动 migration 并由 PostgreSQL 锁串行化 | 已确认 | 不新增 migration Job/ext；三个副本可同时启动但不能同时执行 SQL；失败或超时副本不进入 ready，具体超时、`*_notx.sql` 恢复和 forward-only 回滚门槛见第 6.4.1 节 |

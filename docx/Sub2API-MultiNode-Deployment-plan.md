@@ -1,6 +1,6 @@
 # Sub2API 多节点部署实施计划
 
-> 状态：本地实施基线已完成并通过 `G5` 交付确认；`G4-B2b-2b-2-fix/fix-deploy/retest` 与 `G4-B2c` 均已完成，当前三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个 HTTPS `/ready=200`，最终 `release:verify ENV=local` 通过。生产部署、DNSPod、真实数据迁移、容量定标及灾难恢复仍不在本次交付范围
+> 状态：本地实施基线已完成并通过 `G5` 交付确认；其后的生产准入专项首轮本地子集也已完成，覆盖普通入口容量、入口偏斜、共享依赖压力、三节点 WebSocket、真实 `SIGTERM` 排空，以及 Redis 不可用时 Caddy 冷启动/恢复边界。当前三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个 HTTPS `/ready=200`，最终 `release:verify ENV=local` 通过。真实 Provider 生图、Go heap/GC、证书续期协调、AMD64 生产定标、DNSPod、真实数据迁移及灾难恢复仍未完成
 > 创建日期：2026-07-26
 > 适用范围：三个 Multipass ARM64 节点的本地 Docker Swarm 验证，以及 AMD64 生产制品与配置基线
 > 方案来源：[`Sub2API-MultiNode-Deployment.md`](./Sub2API-MultiNode-Deployment.md)
@@ -14,7 +14,7 @@
 当前已完成 `G1` 至 `G5` 的本地实施基线。原 `G4-B2b-2a` PostgreSQL 暂停场景在 `ext.2` 下暴露 readiness 超时，已通过 `backend/extends/lifecycle` 两文件最小修补与 `ext.3` 复测关闭；原 node1/PostgreSQL 整节点场景又暴露正常退出 task 不会被 `on-failure` 重建，已通过仅修改部署层 Sub2API restart condition 为 `any`、既有静态断言、受控滚动和同场景复测关闭。单副本 OOM 与隔离 migration checksum 故障也已验证。后续仍不执行下列操作：
 
 - 不继续扩大阶段 3 运行时代码范围；新增修补仍须先有失败证据并重新审核白名单；
-- 不重复执行已经通过的故障注入；不把本地普通关机、短时依赖故障、单副本 OOM 或隔离 migration 失败外推为强制断电、磁盘损坏、跨节点/备份恢复、自动故障转移、Redis 持续不可用时 Caddy 冷启动或证书续期验证；
+- 不重复执行已经通过的故障注入；不把本地普通关机、短时依赖故障、单副本 OOM、隔离 migration 失败或已观察到的 Caddy 冷启动失败/恢复外推为强制断电、磁盘损坏、跨节点/备份恢复、自动故障转移、证书续期协调或生产 TLS 高可用；
 - 不执行生产部署、真实数据迁移或切流；
 - 不配置 DNSPod，不处理 DNS 故障节点摘除；
 - 不重复触发已完成的发布 workflow，不覆盖任何 release tag 或镜像 tag。
@@ -592,14 +592,14 @@ deploy/cluster/
 | 场景 | 预期 | 当前状态 |
 | --- | --- | --- |
 | 停止单个 Sub2API task | 本节点 Caddy 短暂失败；其他节点继续服务；task 按策略恢复 | `G4-B2a` 已通过 |
-| `SIGTERM`/滚动替换 | 新请求和新 WebSocket upgrade 被拒绝；已有 HTTP/SSE 按 shutdown 语义排空；已有 WebSocket 最迟在窗口到期返回 `1012`，不要求识别连接内新 turn | 待后续专项 |
+| `SIGTERM`/滚动替换 | 新请求和新 WebSocket upgrade 被拒绝；已有 HTTP/SSE 按 shutdown 语义排空；已有 WebSocket 最迟在窗口到期返回 `1012`，不要求识别连接内新 turn | 已完成无 Provider 的本地子集：真实 `SIGTERM` 下既有 WebSocket 在 5 秒观察窗内保持连接，新入口停止接受，容器 clean exit 并由 Swarm 补回；到期 `1012` 由单元/race 测试通过。Provider-backed HTTP/SSE 与实机超时 `1012` 仍待生产前专项 |
 | 单副本 OOM | 只影响该节点容量；记录 cgroup OOM、重启和 limiter 行为，不损坏共享状态 | `G4-B2c` 已通过；外部匿名内存压力，不代表所有业务 limiter 压测已完成 |
 | 停止 `node3` | manager quorum 仍正常，容量下降一个副本；不在其他节点形成第二副本 | `G4-B2a` 已通过 |
 | 停止 Redis | OAuth/共享缓存/Caddy storage 相关 readiness 符合预期；不误报健康；恢复后加载原数据 | `G4-B2b-1` 已通过暂停/恢复；进程重启/持久化恢复未验证 |
 | 停止 PostgreSQL | 三个 Sub2API `/ready=503`；PostgreSQL 不漂移到空目录；恢复后重新挂载原目录 | `G4-B2b-2a` 已在 `ext.3` 通过同一容器暂停/恢复；整节点场景见下一行 |
 | 停止 node2/Redis 数据节点 | 故障节点入口不可达，另外两个应用 `/health=200`、`/ready=503`；quorum 保持，Redis 新 task 仅能 Pending 且不漂移，DNS 不自动摘除 | `G4-B2b-2b-1` 已通过 |
 | 停止 node1/PostgreSQL 数据节点 | node2/node3 重新形成唯一 Leader；故障节点入口不可达，另外两个应用 fail-closed；PostgreSQL 新 task 仅能 Pending 且不漂移 | 首次未通过；最小配置修正后的同场景复测已通过 |
-| Caddy 重启 | 从共享 Redis storage 加载相同证书体系，不重复签发 | `G4-B2a` 已通过；Redis 不可用时未重启 Caddy，续期未验证 |
+| Caddy 重启 | 从共享 Redis storage 加载相同证书体系，不重复签发 | 已通过正常 storage 重启及 Redis 不可用冷启动边界：存量节点继续 TLS，新 Caddy 因 storage timeout 失败，Redis 恢复后自动启动并加载相同证书；续期协调未验证 |
 | 管理端原地更新请求 | 由 Caddy 明确拒绝；`/version` 仍正常 | `S4-A/S4-B` 已通过 |
 
 `G4-B2a` 实施记录（2026-07-27）：
@@ -741,21 +741,30 @@ deploy/cluster/
 - migration 故障使用临时逻辑数据库、临时版本化 Secret 与单副本临时 Swarm service，正式配置内容只在管道中把 `database.dbname` 替换为 `sub2api_g4b2c`，不打印或落盘应用 Secret。临时库只预置 `001_init.sql` 的错误 checksum；当前固定镜像 task `7j9f05g93ub6` 明确以 exit 1 失败，日志命中 `migration 001_init.sql checksum mismatch`，没有 server started/listening/ready 记录；
 - 临时库只保留 1 条故意错误记录且未创建 `users`，正式库前后均为 `236/236/0/0`。临时 service、Secret 和数据库最终均确认不存在。此前两个直接 `docker run` 尝试分别因缺少等价可写数据目录或未挂载 Swarm Secret 而在 migration 前退出，均已清理且不计有效验证。
 
+生产准入专项首轮本地子集记录（2026-07-27，部分完成）：
+
+- 通过三个真实 Caddy HTTPS 入口执行短时基线。`/health` 在每节点 4 workers 下：单节点 `3751.9 req/s`、双节点合计 `4924.1 req/s`、三节点合计 `3172.7 req/s`，请求全部为 200；三节点反而下降，明确暴露三台 Multipass VM 共享同一 Mac 宿主与共享依赖时的争用，不能据此宣称线性扩展。`/ready` 也完成单/双/三入口样本，全部为 200；4:1:1 workers 的偏斜样本中 node1 承担 `3149/4976` 个请求，验证最热副本风险；
+- `/ready` 压力前后 PostgreSQL 增加 `41963` 次 commit、`713` 次 block read、`1918182` 次 block hit，没有新增 rollback 或 temp file；Redis 最终 `rejected_connections=0`。这证明共享 PostgreSQL/Redis 会进入容量路径，但不是生产连接池、磁盘或吞吐上限结论；
+- Docker/cgroup 资源记录显示 Sub2API、PostgreSQL、Redis 均未超过现有 4G 缩小档，既有单副本 OOM 试验已证明 `2GiB` hard limit 只杀死并重建一个副本；图片并发 limiter 的满载、等待队列溢出和 429 回归测试以及相关 race 测试通过。当前应用没有暴露 Go heap/GC 指标，且没有配置真实 Provider，因此本轮不为采样新增 telemetry 端点，也不伪造生图吞吐；
+- 三个入口均完成 OpenAI Responses WebSocket `101 Switching Protocols` 并保持 12 秒。node3 实际收到 `SIGTERM` 后，既有 WebSocket 在 5 秒观察窗内继续存活，新直连请求立即拒绝；客户端结束后旧容器 `exit=0`，Swarm 自动补回，入口恢复并通过 `release:verify`。实机没有 Provider-backed 长请求可保持到 30 秒窗口，因此超时 `1012 Service Restart` 只由对应单元/race 测试确认，HTTP/SSE 业务排空仍未冒充实测；
+- 暂停 Redis 后，node1/node2 已加载证书的 Caddy 仍可完成 TLS 握手；此时重建 node3 Caddy 会以 `provision caddy.storage.redis: i/o timeout` 失败并按策略重试。Redis 恢复后 node3 自动启动，三个入口恢复 200；Redis DB 1 仍为 15 个 key，key name set SHA-256 与证书 serial/指纹均保持不变。该结果关闭“Redis 不可用时 Caddy 冷启动行为”，但 Local CA 证书不在续期窗口，未验证分布式续期锁或生产 ACME。
+
 禁止在本阶段执行：删除持久化卷、`docker stack rm` 通用卸载、破坏真实业务数据、生产 DNS 修改或未记录的 `--force` 删除。
 
 ### 9.5 S4-E：本地容量与稳定性记录（部分完成，生产定标延期）
 
-- [ ] 分别记录单/双/三副本普通请求、生图和长连接基线；
-- [ ] 已采集单副本 OOM 的 `memory.current`、`memory.peak` 与 cgroup 事件；Go heap/GC、业务请求/响应字节、网络和磁盘的完整容量基线延期到生产前专项；
-- [ ] 记录最热副本、DNS/入口分布偏差模拟和共享 PostgreSQL/Redis 瓶颈；
-- [ ] 验证 4G 本地资源档的 reservation/limit 和有界拒绝语义；
-- [ ] 明确报告本地数据不能推导生产配额或 200M 聚合带宽效果。
+- [ ] 已记录单/双/三副本普通入口和三节点 WebSocket 基线；真实 Provider 生图基线因当前环境未配置 Provider 而延期；
+- [ ] 已采集请求/响应字节、Docker 网络/块 I/O、PostgreSQL/Redis 原生状态，以及单副本 OOM 的 `memory.current`、`memory.peak` 与 cgroup 事件；Go heap/GC 与真实图片 payload 因无现成指标端点/Provider 延期，不为本地测试新增观测实体；
+- [x] 已记录 4:1:1 入口偏斜下的最热副本，并用 `/ready` 压力确认共享 PostgreSQL/Redis 进入瓶颈路径；
+- [x] 已验证 4G 本地资源档的 reservation/limit、单副本 cgroup OOM 隔离及图片并发 limiter 的有界 429 拒绝语义；
+- [x] 已明确报告 Multipass 共享宿主争用，本地数据不能推导生产配额、线性扩展或 200M 聚合带宽效果。
 
 ### 9.6 阶段 4 退出门槛
 
 - [x] 最小环境恢复后 Sub2API/Caddy 已回到 `3/3` 且每节点最多一个，PostgreSQL/Redis 为 `1/1`；
 - [x] 当前本地实施基线内的多实例安全专项全部通过；
-- [ ] shared TLS storage 的 Caddy 重启恢复及 Redis 短时中断期间既有证书服务已通过；Redis 不可用时 Caddy 冷启动与续期协调作为已知限制延期；
+- [x] shared TLS storage 的正常 Caddy 重启、Redis 短时中断期间存量 TLS、Redis 不可用时 Caddy 冷启动失败及恢复后的同证书加载均已验证；
+- [ ] 证书续期协调仍为已知限制，延期到生产 ACME staging 或自然续期窗口验证；
 - [x] 滚动更新、失败暂停和旧组合回滚可复现；
 - [x] 已授权故障矩阵全部完成：低风险子集、Redis/PostgreSQL 暂停恢复、两个数据节点、单副本 OOM 和受控 migration 失败均通过；node1/PostgreSQL 首次失败历史保留，最小修正后的复测通过；
 - [x] 未把本地验证表述为生产 HA、容量、DNS 摘除或灾难恢复证明。
@@ -794,7 +803,7 @@ deploy/cluster/
 - 4G ARM64 数据可以作为 16G AMD64 生产配额；
 - 单个请求获得多节点带宽叠加。
 
-`G5` 交付确认（2026-07-27）：**本地实施基线已通过并关闭**。最终运行态为三个 manager Ready/Reachable、唯一 Leader，Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个 HTTPS `/ready=200`；Sub2API restart condition 为 `any`，其他 service 保持 `on-failure`，固定 `ext.3` 镜像、Config/Secret、placement、volume 与数据身份均通过最终校验。此确认接受上列边界，并把完整容量定标、Redis 不可用时 Caddy 冷启动/续期、生产 AMD64 部署、DNSPod、真实迁移、备份恢复及生产可观测性留作后续独立方案，不以未执行项伪装为已验证。
+`G5` 交付确认（2026-07-27）：**本地实施基线已通过并关闭**。最终运行态为三个 manager Ready/Reachable、唯一 Leader，Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个 HTTPS `/ready=200`；Sub2API restart condition 为 `any`，其他 service 保持 `on-failure`，固定 `ext.3` 镜像、Config/Secret、placement、volume 与数据身份均通过最终校验。此后的生产准入专项首轮本地子集又关闭了普通入口/长连接基线、热点与共享依赖观察、真实 `SIGTERM` 排空，以及 Redis 不可用时 Caddy 冷启动行为；真实生图、Go heap/GC、证书续期协调、生产 AMD64 部署、DNSPod、真实迁移、备份恢复及生产可观测性仍留作后续独立门槛，不以未执行项伪装为已验证。
 
 ### 10.3 生产前后续门槛
 
@@ -806,6 +815,16 @@ deploy/cluster/
 - Secret 独立加密保管位置；
 - forward-only migration 的备份恢复证据；
 - DNSPod、公网 ACME、生产变更、切流和回退审批。
+
+### 10.4 生产准入专项首轮结论
+
+本轮只执行本地环境能够真实验证、且不需要新增代码或基础设施的子集。结论为 **部分通过**：现有部署在普通入口、入口偏斜、共享依赖压力、三节点 WebSocket、真实 `SIGTERM` 和 Caddy/Redis 冷启动边界上符合设计；最终集群恢复到既有固定制品与健康状态。以下三项仍阻断“生产就绪”声明：
+
+1. 配置真实 Provider 后完成生图吞吐、图片 payload、Provider/账号额度及 provider-backed HTTP/SSE/WebSocket 排空；
+2. 在 AMD64 生产等规格节点和 200M 网络条件下完成容量定标，并接入或使用既有方式采集 Go heap/GC；
+3. 在生产 ACME staging 或自然续期窗口验证三个 Caddy 的共享 storage 续期锁、挑战状态和续期后证书一致性。
+
+在这三项完成前，当前结果只能作为本地稳定性证据，不能批准生产切流。
 
 ## 11. 提交与评审拆分
 
@@ -890,7 +909,7 @@ deploy/cluster/
 - [x] `G4-B2b-2b-2-recovery` 最小环境恢复已完成并通过；
 - [x] `G4-B2b-2b-2-fix-review` 配置层只读复盘已完成并通过；
 - [x] `G4-B2b-2b-2-fix`、`fix-deploy`、`retest` 与 `G4-B2c` 已分别取得本轮一次性授权并完成；
-- [x] 阶段 5 交付物足以关闭本地实施基线，延期项和不得外推的结论已明确；
+- [x] 阶段 5 交付物足以关闭本地实施基线，生产准入首轮本地子集及不得外推的结论也已登记；
 - [x] `G1/G2/G3/G4/G5` 当前本地实施基线均已完成；生产、DNS、真实迁移、容量定标和灾难恢复仍需独立授权。
 
-当前 G0 至 G5 的本地实施基线已全部关闭。活动镜像仍为 `ext.3`，annotated tag `v0.1.165-ext.3` 固定到 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`；最终集群为 Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个入口与 `release:verify` 通过。node1/PostgreSQL 首次失败、无效采样尝试和未触发 cgroup 的首个 OOM 注入均保留为历史证据，不冒充成功；后续有效复测与故障注入已通过。下一阶段只能在新的授权下进入生产容量/可观测性、Redis/Caddy 剩余边界、AMD64 生产部署、DNSPod 或真实数据迁移。
+当前 G0 至 G5 的本地实施基线已全部关闭，生产准入首轮本地子集也已完成。活动镜像仍为 `ext.3`，annotated tag `v0.1.165-ext.3` 固定到 `6c859d2d83e03c49fb49a53e530932d7a6c789d7`；最终集群为 Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个入口与 `release:verify` 通过。node1/PostgreSQL 首次失败、无效采样尝试和未触发 cgroup 的首个 OOM 注入均保留为历史证据，不冒充成功；后续有效复测与故障注入已通过。下一阶段应优先补齐真实 Provider 生图与排空、AMD64 容量/Go runtime 指标和 Caddy 证书续期协调，再进入生产部署、DNSPod 或真实数据迁移。

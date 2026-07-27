@@ -1,6 +1,6 @@
 # GoTask 发布与运维手册
 
-> 状态：G1 至 G5 本地实施基线已完成；Sub2API `restart_policy.condition=any` 的静态修正、运行态应用、node1/PostgreSQL 复测、单副本 OOM 与隔离 migration 失败均已通过。当前三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个入口和 `release:verify ENV=local` 正常
+> 状态：G1 至 G5 本地实施基线已完成；生产准入专项首轮本地子集也已完成，覆盖普通入口容量、入口偏斜、共享依赖压力、三节点 WebSocket、真实 `SIGTERM` 排空和 Redis 不可用时 Caddy 冷启动/恢复。当前三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`，三个入口和 `release:verify ENV=local` 正常；真实 Provider 生图、Go heap/GC、证书续期协调与 AMD64 定标仍待生产前完成
 > 适用范围：Sub2API Docker Swarm 本地 ARM64 验证与后续 AMD64 生产环境
 > 基线日期：2026-07-27（Asia/Shanghai）
 
@@ -396,7 +396,7 @@ trap - EXIT INT TERM HUP
 unlink "$recovery_log"
 ```
 
-node2/Redis 场景由 node1 manager 观察。node2 入口不可达是预期结果；node1/node3 必须保持 quorum 与唯一 Leader，两个存活应用 `/health=200`、`/ready` 在约 3 秒内返回 503，HTTPS 使用已加载证书返回 503。Redis 的新 desired task 必须没有 NODE，并因唯一 placement 无可用节点而 Pending；两个存活节点各只保留一个 Sub2API/Caddy task。不可达节点的旧 task 可能保留最后已知 `Running`，global service 的 desired 数也会随可用节点变化，因此不得要求 `docker service ls` 精确显示 `2/3` 或 `0/1`，也不得用汇总比值推断故障节点进程仍存活。期间不得重启存活 Caddy。恢复后的 node2 Caddy 可在 Redis 已恢复后读取共享 storage，但不能据此宣称“Redis 持续不可用时 Caddy 冷启动”已通过。
+node2/Redis 场景由 node1 manager 观察。node2 入口不可达是预期结果；node1/node3 必须保持 quorum 与唯一 Leader，两个存活应用 `/health=200`、`/ready` 在约 3 秒内返回 503，HTTPS 使用已加载证书返回 503。Redis 的新 desired task 必须没有 NODE，并因唯一 placement 无可用节点而 Pending；两个存活节点各只保留一个 Sub2API/Caddy task。不可达节点的旧 task 可能保留最后已知 `Running`，global service 的 desired 数也会随可用节点变化，因此不得要求 `docker service ls` 精确显示 `2/3` 或 `0/1`，也不得用汇总比值推断故障节点进程仍存活。期间不得重启存活 Caddy。后续独立专项已验证 Redis 不可用时重建 Caddy 会因 storage timeout 失败，Redis 恢复后自动启动并加载同一证书；该历史场景本身仍不能用来证明冷启动，证书续期协调也仍未验证。
 
 node1/PostgreSQL 场景开始前，必须先证明 `multipass exec node2 -- timeout 5 docker node ls` 可用，因为 node1 上的既有 Docker context 和 GoTask 入口在故障期不可用。配置修正应用后另行授权的复测必须使用拆分门槛：node1 stop 返回后 30 秒内，node2/node3 必须形成 quorum 且只有一个 Leader；50 秒内，PostgreSQL 新 desired task 必须没有 NODE、因唯一 placement 无可用节点而 Pending，且不得漂移。任一门槛失败即恢复并判失败；Pending 一出现就人工恢复，不等待 50 秒或 watchdog。60 秒宿主机 watchdog 保持不变。Redis 保持在 node2；两个存活应用 `/health=200`、`/ready` 在约 3 秒内返回 503。验收读取 task-level desired/current state、NODE 和调度错误，不以汇总 `REPLICAS` 比值作为 liveness。node1 恢复后不要求重新成为 Leader。以上新门槛不追认 2026-07-27 的历史执行通过。
 
