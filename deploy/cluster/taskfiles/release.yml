@@ -82,6 +82,28 @@ tasks:
           docker --context "$DOCKER_CONTEXT" service inspect "$service_name" >/dev/null
         done
 
+        rollout_deadline=$(( $(date +%s) + 300 ))
+        for component in sub2api caddy; do
+          service_name="${STACK_NAME}_${component}"
+          while :; do
+            update_state=$(docker --context "$DOCKER_CONTEXT" service inspect \
+              --format '{{"{{if .UpdateStatus}}{{.UpdateStatus.State}}{{end}}"}}' \
+              "$service_name")
+            case "$update_state" in
+              ''|completed|rollback_completed) break ;;
+              paused|rollback_paused)
+                echo "Rollout did not complete: $service_name state=$update_state" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$(date +%s)" -ge "$rollout_deadline" ]; then
+              echo "Timed out waiting for rollout: $service_name state=$update_state" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+        done
+
         actual_sub2api_image=$(docker --context "$DOCKER_CONTEXT" service inspect --format '{{"{{.Spec.TaskTemplate.ContainerSpec.Image}}"}}' "${STACK_NAME}_sub2api")
         actual_caddy_image=$(docker --context "$DOCKER_CONTEXT" service inspect --format '{{"{{.Spec.TaskTemplate.ContainerSpec.Image}}"}}' "${STACK_NAME}_caddy")
         actual_postgres_image=$(docker --context "$DOCKER_CONTEXT" service inspect --format '{{"{{.Spec.TaskTemplate.ContainerSpec.Image}}"}}' "${STACK_NAME}_postgres")
@@ -90,6 +112,37 @@ tasks:
         test "$actual_caddy_image" = "$CADDY_IMAGE"
         test "$actual_postgres_image" = "$POSTGRES_IMAGE"
         test "$actual_redis_image" = "$REDIS_IMAGE"
+
+        actual_model_pricing_config=$(docker --context "$DOCKER_CONTEXT" service inspect \
+          --format '{{"{{range .Spec.TaskTemplate.ContainerSpec.Configs}}{{.ConfigName}}{{end}}"}}' \
+          "${STACK_NAME}_sub2api")
+        actual_app_config_secret=$(docker --context "$DOCKER_CONTEXT" service inspect \
+          --format '{{"{{range .Spec.TaskTemplate.ContainerSpec.Secrets}}{{.SecretName}}{{end}}"}}' \
+          "${STACK_NAME}_sub2api")
+        actual_caddyfile_config=$(docker --context "$DOCKER_CONTEXT" service inspect \
+          --format '{{"{{range .Spec.TaskTemplate.ContainerSpec.Configs}}{{.ConfigName}}{{end}}"}}' \
+          "${STACK_NAME}_caddy")
+        test "$actual_model_pricing_config" = "$MODEL_PRICING_CONFIG"
+        test "$actual_app_config_secret" = "$APP_CONFIG_SECRET"
+        test "$actual_caddyfile_config" = "$CADDYFILE_CONFIG"
+
+        for component in sub2api caddy; do
+          service_name="${STACK_NAME}_${component}"
+          expected_image="$SUB2API_IMAGE"
+          if [ "$component" = caddy ]; then
+            expected_image="$CADDY_IMAGE"
+          fi
+          running_images=$(docker --context "$DOCKER_CONTEXT" service ps \
+            --filter desired-state=running \
+            --format '{{"{{.Image}}"}}' \
+            "$service_name")
+          test -n "$running_images"
+          if printf '%s\n' "$running_images" | grep -Fvx "$expected_image" >/dev/null; then
+            echo "Running task image mismatch: $service_name" >&2
+            printf '%s\n' "$running_images" >&2
+            exit 1
+          fi
+        done
 
         expected_app_tasks=$(printf '%s\n' $ACTIVE_NODE_ADDRESSES | sed '/^$/d' | wc -l | tr -d ' ')
         test "$expected_app_tasks" -ge 1

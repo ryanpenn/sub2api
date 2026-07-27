@@ -58,7 +58,7 @@ multipass exec node3 -- <command>
 | Sub2API | `sub2api-local/sub2api:v0.1.165-ext.2-arm64` | `3e1c69b1d96417acbd615ca7d48b8dbda60f070e65ccb6c0f80c59a095acae70` | `sha256:bb638caa30eac89bf8bb5ee6395361f941f83fc0f810150249901ba896561703` |
 | Caddy | `sub2api-local/caddy:v2.11.4-redis-v1.8.1-arm64` | `cc8f05e47661ca5b41998b884831abc8e126082cf9ed697cd82fdc56d9c92ff2` | `sha256:26a85a756bcbd9d2f94d9bc55e48fce85ee55cf181b6002a3c82e1292504b739` |
 
-正式 Sub2API `v0.1.165-ext.2` 固定到 commit `9aca50a8fd1ad34de6ef6ecf08eb58800a19fa89`，source image ID 为 `sha256:d6f956d592de70534e0c94fcff4199515dda555acc6f6ccef6405099daff5539`。node1 更新的 Swarm `PreviousSpec` 仍指向 `v0.1.165-ext.1`，对应旧 image ID `sha256:658b62d53062a22140670a40622b65f69432c7f32293113e2960c74b826e1e04` 已保留在 node1；本轮只核实回滚目标，没有实际执行 rollback。
+正式 Sub2API `v0.1.165-ext.2` 固定到 commit `9aca50a8fd1ad34de6ef6ecf08eb58800a19fa89`，source image ID 为 `sha256:d6f956d592de70534e0c94fcff4199515dda555acc6f6ccef6405099daff5539`。旧版本 `v0.1.165-ext.1` 的 node image ID 为 `sha256:658b62d53062a22140670a40622b65f69432c7f32293113e2960c74b826e1e04`；G4-B1 已按历史归档 SHA-256 把旧镜像加载到三个节点并完成实际回滚，最终正式 service 已重新恢复为 `ext.2`。
 
 三个 Caddy 入口共用的 Local CA 根证书 SHA-256 指纹为 `1C:F3:6C:A9:FF:B0:AE:B9:25:3E:B0:47:95:D4:76:5A:F0:41:B8:EE:3A:B7:7A:07:58:E4:F9:7A:89:93:A2:CB`。三个入口呈现的叶证书 subject 均为空、关键 SAN 均为 `DNS:sub2api.test`，serial 均为 `6A756405F963CC3B7D3310DCAF348F5B`，SHA-256 指纹均为 `40:FD:12:CF:C3:3C:C4:B8:45:80:75:AD:1F:09:91:C1:4E:A2:5D:FA:50:C5:F1:C2:3E:5C:C1:D5:A6:F3:15:7A`。这证明当前三个入口读取到同一证书体系，但不替代后续的续期、Redis 中断或 Caddy 重启恢复演练。
 
@@ -76,4 +76,17 @@ multipass exec node3 -- <command>
 - 当前正式数据中没有 Provider 账户、Provider API Key 或 Scheduled Test plan，因此 OAuth、SSE/OpenAI WebSocket、生图 limiter、Batch job lock、Scheduled Test、expiry、计费和 migration 使用协议级、race 或隔离 integration harness 验证，没有为了测试增加真实 Provider 配置或制造费用；
 - 正式数据库的 `schema_migrations` 为 236 条记录、236 个唯一 filename、0 个空 checksum、0 组重复 filename；三个节点 TOTP 状态均为 disabled，近 500 行 Sub2API 日志的 password、Bearer、refresh token、JWT/TOTP secret 等敏感模式命中为 0。
 
-该记录只证明 S4-B 非破坏性专项。最小滚动排空、三个正式 task 同时替换、双协调后端同时故障、TOTP 启用后的跨节点行为、实际回滚、TLS 恢复和故障矩阵均未执行，仍受 `G4-B` 或后续单独授权约束。
+该记录只证明 S4-B 非破坏性专项；后续滚动与实际回滚已由 G4-B1/S4-C 单独完成。三个正式 task 同时替换、双协调后端同时故障、TOTP 启用后的跨节点行为、TLS 恢复和故障矩阵仍未执行，继续受 G4-B2 或后续单独授权约束。
+
+## G4-B1/S4-C 滚动与回滚记录
+
+2026-07-27 已完成受控滚动、失败暂停、实际回滚和模型价格 Config 回滚：
+
+- 历史 `ext.1` 镜像通过 source image ID、归档 SHA-256 和 node image ID 三重校验后加载到三个节点；GoTask 实际完成 `ext.2 -> ext.1 -> ext.2`。最终三个容器均使用 image ID `sha256:bb638caa30eac89bf8bb5ee6395361f941f83fc0f810150249901ba896561703`，`/app/sub2api` SHA-256 均为 `04bb1b3d8a39012a0c4e5135a950fd862b7171925b81abed70d54cbb63b5739c`；
+- 单独滚动 Sub2API 镜像时，97 个逐秒样本最大同时失败入口数为 1；单独滚动应用 `/ready` healthcheck 时，92 个样本最大为 1；单独滚动 Caddy upstream health 时，73 个样本均为三个入口 200；
+- 同一 Stack 同时改变 Sub2API healthcheck 与 Caddy upstream health 时，两个 service 独立并行滚动，94 个样本中有 1 个样本同时两个入口失败，但始终至少保留一个入口。因此关联变更必须串行：先使用新旧版本共同支持的健康路径滚动应用，再滚动应用 healthcheck，最后滚动 Caddy upstream health；
+- 一个临时错误 app-config Secret 使首个新 task 不能连接数据库，Swarm 进入 `paused`，增强后的 `release:verify` 返回失败；恢复正式 `app-config-v001` 后 rollout completed，临时 Secret 已删除；
+- 模型价格 Config 使用语义相同的临时内容哈希对象完成更新与回滚，前后镜像不变；最终重新引用 `sub2api-local-model-pricing-139de8a906ce`，临时 Config 已删除；
+- 最终 Sub2API/Caddy 为 `3/3`，PostgreSQL/Redis 为 `1/1`，三个入口 `/ready=200`，应用 healthcheck 和 Caddy upstream health 均为 `/ready`，没有 `s4c` 临时对象残留。
+
+该记录不覆盖 task kill、节点停止、Redis/PostgreSQL 中断、OOM、三个正式 task 同时替换或 TLS storage 恢复；这些项目仍属于未授权的 G4-B2/S4-D。

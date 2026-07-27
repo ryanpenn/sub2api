@@ -1,6 +1,6 @@
 # GoTask 发布与运维手册
 
-> 状态：G1/G2/G3 已通过；G4-A 三副本启用及 S4-B 非破坏性专项已完成，G4-B 故障演练未授权
+> 状态：G1/G2/G3、G4-A、S4-B 与 G4-B1/S4-C 已通过；G4-B2/S4-D 故障矩阵未授权
 > 适用范围：Sub2API Docker Swarm 本地 ARM64 验证与后续 AMD64 生产环境
 > 基线日期：2026-07-27（Asia/Shanghai）
 
@@ -205,7 +205,7 @@ task ops:status
 4. 首次 `release:apply` 在尚无 `sub2api/caddy` label 时创建完整期望状态，但只调度 PostgreSQL/Redis；不另建第二套 Stack；
 5. `release:bootstrap` 仅用于全新数据库，必须显式确认；成功后删除临时 service 和一次性管理员密码 Secret，后续更新不得再次调用；
 6. bootstrap 成功后只给 `node1` 添加应用 label，Swarm 才调度正式 Sub2API/Caddy；
-7. `release:verify` 先从 node1 回环 Caddy Admin API 导出 Local CA，再只访问 `ACTIVE_NODE_ADDRESSES`，并核对 digest、Config/Secret、placement 和当前 desired-state task 数；阶段 2 为 `/health`，阶段 3 readiness 验证后切换为 `/ready`。历史 Failed/Rejected task 保留在 Swarm 事件中用于追踪，但恢复后不永久阻断当前态验收。
+7. `release:verify` 先从 node1 回环 Caddy Admin API 导出 Local CA，再只访问 `ACTIVE_NODE_ADDRESSES`；它最多等待 300 秒直到 Sub2API/Caddy rollout completed，遇到 paused 立即失败，并核对 service 期望镜像、所有 desired-running task 实际镜像、Config/Secret、placement 和 task 数；阶段 2 为 `/health`，阶段 3 readiness 验证后切换为 `/ready`。历史 Failed/Rejected task 保留在 Swarm 事件中用于追踪，但恢复后不永久阻断当前态验收。
 
 数据库 migration 仍由 Sub2API 启动过程执行，并通过 PostgreSQL advisory lock 串行化。第一期不新增独立 migration service/job，以避免引入额外实体；`bootstrap` 只负责全新数据库的首次初始化控制，不替代应用自身 migration。
 
@@ -249,6 +249,8 @@ task ops:logs SERVICE=sub2api
 
 滚动更新不等于暂停整个集群：Swarm 按更新策略逐批替换副本，其余健康节点继续服务。但是当前 Caddy 固定代理本机 Sub2API，因此某节点上的副本被替换时，该节点入口可能短暂不可用。生产 DNS 尚无自动故障摘除，应通过合理的 `parallelism`、`delay`、健康检查和失败暂停策略降低影响。
 
+Swarm 的 `parallelism: 1` 只约束单个 service；一次 `stack deploy` 同时改变 Sub2API 与 Caddy 时，两个 service 仍会并行滚动。G4-B1 实测同时改变双方健康路径曾短暂影响两个节点。因此跨 service 关联变更不得在一份清单中直接同时生效，必须使用新旧应用共同支持的过渡健康路径，并按以下顺序串行：先滚动 Sub2API 镜像并等待 completed，再滚动 Sub2API healthcheck，最后滚动 Caddy upstream health；每一步完成后都逐节点采样，最终再执行正式清单的 `release:apply -> verify`。第一期保留为手册化操作，不为这一低频场景新增常驻控制面或通用编排器。
+
 ### 6.2 更新模型价格等配置
 
 模型价格缓存属于配置更新，不要求重新构建应用镜像。建议创建新的版本化 Swarm Config，更新 service 对 Config 的引用，再沿用相同的 `plan -> apply -> verify` 流程触发滚动更新。因为运行中的容器不会自动获取新 Config，仍需要替换相关 Sub2API task，但不需要全局停服。
@@ -264,6 +266,8 @@ task ops:status
 ```
 
 回滚目标必须是发布记录中已验证的上一版本，包含旧 image digest 以及与其匹配的 Config/Secret 版本；不能只依赖临时执行 `docker service update --rollback`。如果数据库 migration 不向后兼容，应先停止自动回滚并人工评估，避免旧应用读取新 schema。
+
+本地归档回滚前，旧镜像必须先按 source image ID、归档 SHA-256 和每节点 image ID 三重校验加载到所有目标节点；不能只因 node1 保留旧镜像就开始三节点回滚。若新旧版本的 readiness 路径不同，按第 6.1 节串行处理应用与 Caddy，禁止让两个 service 同时更新健康路径。
 
 ## 7. 服务上下线
 
