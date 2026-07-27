@@ -1,6 +1,6 @@
 # GoTask 发布与运维手册
 
-> 状态：G1/G2/G3、G4-A、S4-B、G4-B1/S4-C 与 G4-B2a/S4-D 低风险子集已通过；依赖中断及资源/迁移故障未授权
+> 状态：G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集与 G4-B2b-1 Redis 中断恢复已通过；PostgreSQL/数据节点及资源/迁移故障未授权
 > 适用范围：Sub2API Docker Swarm 本地 ARM64 验证与后续 AMD64 生产环境
 > 基线日期：2026-07-27（Asia/Shanghai）
 

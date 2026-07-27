@@ -60,7 +60,7 @@ multipass exec node3 -- <command>
 
 正式 Sub2API `v0.1.165-ext.2` 固定到 commit `9aca50a8fd1ad34de6ef6ecf08eb58800a19fa89`，source image ID 为 `sha256:d6f956d592de70534e0c94fcff4199515dda555acc6f6ccef6405099daff5539`。旧版本 `v0.1.165-ext.1` 的 node image ID 为 `sha256:658b62d53062a22140670a40622b65f69432c7f32293113e2960c74b826e1e04`；G4-B1 已按历史归档 SHA-256 把旧镜像加载到三个节点并完成实际回滚，最终正式 service 已重新恢复为 `ext.2`。
 
-三个 Caddy 入口共用的 Local CA 根证书 SHA-256 指纹为 `1C:F3:6C:A9:FF:B0:AE:B9:25:3E:B0:47:95:D4:76:5A:F0:41:B8:EE:3A:B7:7A:07:58:E4:F9:7A:89:93:A2:CB`。三个入口呈现的叶证书 subject 均为空、关键 SAN 均为 `DNS:sub2api.test`，serial 均为 `6A756405F963CC3B7D3310DCAF348F5B`，SHA-256 指纹均为 `40:FD:12:CF:C3:3C:C4:B8:45:80:75:AD:1F:09:91:C1:4E:A2:5D:FA:50:C5:F1:C2:3E:5C:C1:D5:A6:F3:15:7A`。G4-B2a 已证明单个 Caddy task 从正常共享 storage 重启后仍读取相同证书体系；续期协调与 Redis 中断恢复仍未验证。
+三个 Caddy 入口共用的 Local CA 根证书 SHA-256 指纹为 `1C:F3:6C:A9:FF:B0:AE:B9:25:3E:B0:47:95:D4:76:5A:F0:41:B8:EE:3A:B7:7A:07:58:E4:F9:7A:89:93:A2:CB`。三个入口呈现的叶证书 subject 均为空、关键 SAN 均为 `DNS:sub2api.test`，serial 均为 `6A756405F963CC3B7D3310DCAF348F5B`，SHA-256 指纹均为 `40:FD:12:CF:C3:3C:C4:B8:45:80:75:AD:1F:09:91:C1:4E:A2:5D:FA:50:C5:F1:C2:3E:5C:C1:D5:A6:F3:15:7A`。G4-B2a 已证明单个 Caddy task 从正常共享 storage 重启后仍读取相同证书体系；G4-B2b-1 已证明 Redis 短时不可用期间既有 Caddy task 仍可完成 TLS 握手。Redis 不可用时 Caddy 冷启动和续期协调仍未验证。
 
 本地 Stack 以 host mode 发布 Sub2API `8080` 供同节点 Caddy 访问，因此该端口也可从 Multipass 宿主机到达。本次测试环境已明确接受该安全例外；生产准入前必须通过防火墙或等价网络约束禁止绕过 Caddy。
 
@@ -101,3 +101,14 @@ multipass exec node3 -- <command>
 - 最终 `release:verify ENV=local` 通过，Sub2API/Caddy 恢复 `3/3`，PostgreSQL/Redis 保持 `1/1`，三个 manager 均 Ready。
 
 该记录不覆盖 Redis/PostgreSQL/数据节点中断、OOM、受控 migration 失败、证书续期协调或生产故障域。
+
+## G4-B2b-1 Redis 中断恢复记录
+
+2026-07-27 在不修改 service spec、不重启 Caddy 且不停止 node2 的边界内，将 Redis 容器 `17de281ecc86` 暂停约 25.05 秒后恢复：
+
+- 暂停期间三个 Sub2API 均为直连 `/health=200`、`/ready=503`；三个 HTTPS 入口可完成 TLS 握手并返回 503，符合 Caddy active health 与依赖异常不误报 ready 的预期；
+- 解除暂停后 Redis 约 0.09 秒恢复 `PONG`，约 1.0 秒后的完整采样中三个直连 `/ready` 和 HTTPS 入口均恢复 200，Docker health 约 10.1 秒后恢复 healthy；Redis task `qfhw450m6d8e30ambjwsi6k4n` 和 container ID 均未变化；
+- 三个 Caddy task 未重启，证书 serial/指纹不变；Redis DB 1 的 Caddy storage key 数保持 15，key name set SHA-256 保持 `8c59bdb6c96e954ab0b28d80c55c18c09e7ad3ed57992d7231c7a67c91a72ca8`，没有观察到证书签发或 storage error；
+- 最终 `release:verify ENV=local` 通过，Sub2API/Caddy 为 `3/3`，PostgreSQL/Redis 为 `1/1`。应用 DB 0 包含动态 TTL/锁/缓存 key，瞬时 key 数不作为数据完整性校验。
+
+该记录只覆盖同一 Redis 进程的短时不可用与恢复，不覆盖 Redis 进程重启、AOF 重放、数据卷恢复、Redis 不可用时 Caddy 冷启动、真实 OAuth 事务、证书续期、PostgreSQL/数据节点中断或生产故障域。

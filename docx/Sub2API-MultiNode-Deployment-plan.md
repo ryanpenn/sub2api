@@ -1,6 +1,6 @@
 # Sub2API 多节点部署实施计划
 
-> 状态：`G0/G1/G2/G3` 已通过；`G4-A`、`S4-B`、`G4-B1/S4-C` 与 `G4-B2a/S4-D` 低风险子集已完成，依赖中断及资源/迁移故障仍未授权
+> 状态：`G0/G1/G2/G3` 已通过；`G4-A`、`S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D` 与 `G4-B2b-1` Redis 中断恢复已完成，PostgreSQL/数据节点及资源/迁移故障仍未授权
 > 创建日期：2026-07-26
 > 适用范围：三个 Multipass ARM64 节点的本地 Docker Swarm 验证，以及 AMD64 生产制品与配置基线
 > 方案来源：[`Sub2API-MultiNode-Deployment.md`](./Sub2API-MultiNode-Deployment.md)
@@ -11,10 +11,10 @@
 
 本文把已经完成的多节点部署方案拆解为可执行、可验证、可停止和可回滚的实施步骤。阶段编号严格沿用方案文档第 7 节：阶段 0 至阶段 5。
 
-当前已完成 `G1` 仓库侧实施、`G2` 首版制品发布、`G3` 本地单副本基线、阶段 3 多实例前置收敛、`G4-A` 三副本启用、`S4-B` 非破坏性专项、`G4-B1/S4-C` 受控滚动/暂停/回滚，以及 `G4-B2a/S4-D` 单 task、单节点和 Caddy 重启恢复验证。后续仍不执行下列操作：
+当前已完成 `G1` 仓库侧实施、`G2` 首版制品发布、`G3` 本地单副本基线、阶段 3 多实例前置收敛、`G4-A` 三副本启用、`S4-B` 非破坏性专项、`G4-B1/S4-C` 受控滚动/暂停/回滚、`G4-B2a/S4-D` 单 task、单节点和 Caddy 重启恢复，以及 `G4-B2b-1` Redis 中断恢复验证。后续仍不执行下列操作：
 
 - 不继续扩大阶段 3 运行时代码范围；新增修补仍须先有失败证据并重新审核白名单；
-- 不执行 `G4-B2b/S4-D` 的 Redis/PostgreSQL/数据节点中断，不执行 `G4-B2c/S4-D` 的 OOM 或受控 migration 失败；不把已完成的 Caddy 重启验证外推为 Redis 中断或证书续期验证；
+- 不执行 `G4-B2b-2/S4-D` 的 PostgreSQL 或数据节点中断，不执行 `G4-B2c/S4-D` 的 OOM 或受控 migration 失败；不把已完成的 Redis 暂停/恢复外推为 Redis 进程重启、持久化恢复、Redis 故障时重启 Caddy 或证书续期验证；
 - 不执行生产部署、真实数据迁移或切流；
 - 不配置 DNSPod，不处理 DNS 故障节点摘除；
 - 不重复触发已完成的发布 workflow，不覆盖任何 release tag 或镜像 tag。
@@ -80,11 +80,12 @@ flowchart LR
 | `G4-A` 三副本启用授权 | 允许滚动 node1 到已审核候选版本、分发固定本地镜像、给 node2/node3 添加应用/入口 label，并做非破坏性三节点验证 | 已完成 |
 | `G4-B1` 滚动与回滚授权 | 允许在本地测试环境执行 `S4-C` 受控滚动、失败暂停、旧清单回滚和模型价格 Config 回滚 | 已完成 |
 | `G4-B2a` 低风险故障授权 | 允许在本地测试环境停止单个 Sub2API task、停止并恢复 node3、重启单个 Caddy task，并验证共享 TLS storage 读取 | 已完成 |
-| `G4-B2b` 依赖故障授权 | 允许在本地测试环境中断并恢复 Redis、PostgreSQL 或其所在数据节点 | 未授权 |
+| `G4-B2b-1` Redis 依赖故障授权 | 允许在本地测试环境暂停并恢复同一 Redis 容器；不同时重启 Caddy、不停止数据节点 | 已完成 |
+| `G4-B2b-2` PostgreSQL/数据节点故障授权 | 允许在本地测试环境中断并恢复 PostgreSQL 或停止其所在数据节点 | 未授权 |
 | `G4-B2c` 资源与迁移故障授权 | 允许制造单副本 OOM 或受控 migration 失败 | 未授权 |
 | `G5` 交付确认 | 确认本地验收结论并关闭实施计划 | 未授权 |
 
-任何授权都只覆盖表中动作。`G1` 不隐含 `G2/G3`，`G4-A/G4-B1/G4-B2a` 不隐含 `G4-B2b/G4-B2c`，本地完成不隐含生产授权。
+任何授权都只覆盖表中动作。`G1` 不隐含 `G2/G3`，`G4-A/G4-B1/G4-B2a/G4-B2b-1` 不隐含 `G4-B2b-2/G4-B2c`，本地完成不隐含生产授权。
 
 ### 4.2 总体阶段状态
 
@@ -94,7 +95,7 @@ flowchart LR
 | 1. 节点与基础设施基线 | 已完成 | `G1`；涉及 GHCR/节点时再分别取得 `G2/G3` | 发布链、制品、配置骨架和三 manager 基线通过 |
 | 2. 数据服务与单副本基线 | 已完成 | 阶段 1 通过且已取得 `G3` | PostgreSQL/Redis、单次 bootstrap、单副本与本机 Caddy 基线通过 |
 | 3. 多实例前置收敛 | 已完成 | 阶段 2 通过且代码修补范围再次确认 | 必要 P0 修补、进程级测试、候选制品和三进程冷启动满足门槛；未启用 `node2`/`node3` 应用副本 |
-| 4. 三副本与故障演练 | 进行中（`S4-A/S4-B/S4-C` 与 `S4-D` 低风险子集已完成） | 阶段 3 通过；三副本、滚动回滚和各故障子集分别取得 `G4-A/G4-B1/G4-B2a/G4-B2b/G4-B2c` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
+| 4. 三副本与故障演练 | 进行中（`S4-A/S4-B/S4-C`、`S4-D` 低风险子集与 Redis 中断恢复已完成） | 阶段 3 通过；三副本、滚动回滚和各故障子集分别取得 `G4-A/G4-B1/G4-B2a/G4-B2b-1/G4-B2b-2/G4-B2c` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
 | 5. 环境交付 | 未开始 | 阶段 4 通过 | 交付物、限制和验收报告完成并取得 `G5` |
 
 ## 5. 阶段 0：需求冻结与架构决策
@@ -509,7 +510,7 @@ deploy/cluster/
 
 ## 9. 阶段 4：三副本与故障演练
 
-阶段 4 拆分授权：`G4-A` 覆盖三副本启用，`G4-B1` 覆盖 `S4-C` 受控滚动、失败暂停和实际回滚，两者均已完成；`G4-B2a` 覆盖 `S4-D` 单 task、单节点和 Caddy 重启恢复，现已完成；`G4-B2b` 依赖中断与 `G4-B2c` OOM/受控 migration 失败仍未授权。所有故障注入只允许作用于本地测试环境，不触碰生产或已有生产数据。
+阶段 4 拆分授权：`G4-A` 覆盖三副本启用，`G4-B1` 覆盖 `S4-C` 受控滚动、失败暂停和实际回滚，两者均已完成；`G4-B2a` 覆盖 `S4-D` 单 task、单节点和 Caddy 重启恢复，`G4-B2b-1` 覆盖 Redis 暂停/恢复，现均已完成；`G4-B2b-2` PostgreSQL/数据节点中断与 `G4-B2c` OOM/受控 migration 失败仍未授权。所有故障注入只允许作用于本地测试环境，不触碰生产或已有生产数据。
 
 ### 9.1 S4-A：启用三个 global 副本
 
@@ -582,10 +583,10 @@ deploy/cluster/
 | `SIGTERM`/滚动替换 | 新请求和新 WebSocket upgrade 被拒绝；已有 HTTP/SSE 按 shutdown 语义排空；已有 WebSocket 最迟在窗口到期返回 `1012`，不要求识别连接内新 turn | 待后续专项 |
 | 单副本 OOM | 只影响该节点容量；记录 cgroup OOM、重启和 limiter 行为，不损坏共享状态 | `G4-B2c` 未授权 |
 | 停止 `node3` | manager quorum 仍正常，容量下降一个副本；不在其他节点形成第二副本 | `G4-B2a` 已通过 |
-| 停止 Redis | OAuth/共享缓存/Caddy storage 相关 readiness 符合预期；不误报健康；恢复后加载原数据 | `G4-B2b` 未授权 |
-| 停止 PostgreSQL | 三个 Sub2API `/ready=503`；PostgreSQL 不漂移到空目录；恢复后重新挂载原目录 | `G4-B2b` 未授权 |
-| 停止数据节点 | 控制面与数据服务故障边界符合方案；DNS 不自动摘除 | `G4-B2b` 未授权 |
-| Caddy 重启 | 从共享 Redis storage 加载相同证书体系，不重复签发 | `G4-B2a` 已通过；续期/Redis 中断未验证 |
+| 停止 Redis | OAuth/共享缓存/Caddy storage 相关 readiness 符合预期；不误报健康；恢复后加载原数据 | `G4-B2b-1` 已通过暂停/恢复；进程重启/持久化恢复未验证 |
+| 停止 PostgreSQL | 三个 Sub2API `/ready=503`；PostgreSQL 不漂移到空目录；恢复后重新挂载原目录 | `G4-B2b-2` 未授权 |
+| 停止数据节点 | 控制面与数据服务故障边界符合方案；DNS 不自动摘除 | `G4-B2b-2` 未授权 |
+| Caddy 重启 | 从共享 Redis storage 加载相同证书体系，不重复签发 | `G4-B2a` 已通过；Redis 不可用时未重启 Caddy，续期未验证 |
 | 管理端原地更新请求 | 由 Caddy 明确拒绝；`/version` 仍正常 | `S4-A/S4-B` 已通过 |
 
 `G4-B2a` 实施记录（2026-07-27）：
@@ -595,6 +596,14 @@ deploy/cluster/
 - 强制结束 node3 上单个 Caddy task `7ubcmz17mnpfkmi3xynwx26rq` 后，该 task 于 `2026-07-27 04:13:50.923163934 UTC` 以 exit code 137 失败；Swarm 创建的 `cut05dm2d2aidxaeealiv0evs` 于 `04:13:56.109691979 UTC` 进入 Running，约耗时 5.2 秒。故障采样期间 node1/node2 始终返回 200，仅 node3 短暂不可达，最终三个入口均恢复 200；
 - Caddy 重启前后三个入口的叶证书 serial 均为 `6A756405F963CC3B7D3310DCAF348F5B`，SHA-256 指纹均为 `40:FD:12:CF:C3:3C:C4:B8:45:80:75:AD:1F:09:91:C1:4E:A2:5D:FA:50:C5:F1:C2:3E:5C:C1:D5:A6:F3:15:7A`；Redis DB 1 的 Caddy storage key 数保持 15，key name set SHA-256 保持 `8c59bdb6c96e954ab0b28d80c55c18c09e7ad3ed57992d7231c7a67c91a72ca8`，新 Caddy 日志未出现证书签发事件；
 - 最终 `release:verify ENV=local` 通过：三个 manager 均 Ready，node1 为唯一 Leader，node2/node3 Reachable；Sub2API/Caddy 为 `3/3`，PostgreSQL/Redis 为 `1/1`。本记录只证明单 task、单 manager 节点和 Caddy 从正常共享 storage 重启的恢复行为，不证明 Redis 故障恢复、证书续期协调、OOM 或 migration 失败行为。
+
+`G4-B2b-1` Redis 中断恢复记录（2026-07-27）：
+
+- 基线 `release:verify ENV=local` 通过；Redis task 为 `qfhw450m6d8e30ambjwsi6k4n`，node2 容器为 `17de281ecc86` 且 health=healthy。Caddy Redis DB 1 有 15 个 storage key，key name set SHA-256 为 `8c59bdb6c96e954ab0b28d80c55c18c09e7ad3ed57992d7231c7a67c91a72ca8`；三个入口的证书 serial/指纹与 G4-B2a 基线一致；
+- `2026-07-27 04:37:26.445889019 UTC` 暂停该 Redis 容器，`04:37:51.499959160 UTC` 在退出 trap 保护下解除暂停，中断约 25.05 秒。中断期间三个 Sub2API 均保持直连 `/health=200`，直连 `/ready=503`；三个 HTTPS 入口均成功完成 TLS 握手并返回 503，说明 Caddy 继续使用已加载证书，同时 active health 不会把 Redis 依赖异常的本机应用误报为 ready；
+- Redis 在解除暂停后约 0.09 秒恢复 `PONG`；约 1.0 秒后的完整采样中三个直连 `/ready` 与 HTTPS 入口均恢复 200，Docker health 于 `04:38:01.571153206 UTC` 恢复 healthy，约耗时 10.1 秒。Redis task/container ID 均未变化，没有触发 Swarm task 替换；
+- 恢复后 `release:verify ENV=local` 再次通过；Sub2API/Caddy 为 `3/3`，PostgreSQL/Redis 为 `1/1`。三个 Caddy task 未重启，证书 serial/指纹不变；Caddy Redis DB 1 仍为相同 15 个 key 和相同 key name set SHA-256，日志中的证书签发事件、Redis storage error 均为 0；Sub2API panic/fatal 为 0；
+- 应用 Redis DB 0 的动态 key 数从 121 变为 122；该库包含带 TTL 的缓存、锁和运行态 key，因此不把瞬时 key 数当作完整性校验。本轮没有创建业务测试实体。该结果只证明同一 Redis 进程的短时不可用、readiness 失败与恢复，不证明进程重启/AOF 重放、数据卷恢复、Redis 不可用时重启 Caddy、真实 OAuth 事务或证书续期行为。
 
 禁止在本阶段执行：删除持久化卷、`docker stack rm` 通用卸载、破坏真实业务数据、生产 DNS 修改或未记录的 `--force` 删除。
 
@@ -610,9 +619,9 @@ deploy/cluster/
 
 - [x] 三个 Sub2API/Caddy task 稳定且每节点最多一个；
 - [ ] 多实例安全专项全部通过；
-- [ ] shared TLS storage 的 Caddy 重启恢复已通过；续期协调和 Redis 中断恢复仍待验证；
+- [ ] shared TLS storage 的 Caddy 重启恢复及 Redis 短时中断期间既有证书服务已通过；Redis 不可用时 Caddy 冷启动、持久化恢复与续期协调仍待验证；
 - [x] 滚动更新、失败暂停和旧组合回滚可复现；
-- [ ] 故障矩阵低风险子集已有带时间戳证据；依赖中断、OOM 和 migration 失败仍待验证；
+- [ ] 故障矩阵低风险子集及 Redis 暂停/恢复已有带时间戳证据；PostgreSQL/数据节点中断、OOM 和 migration 失败仍待验证；
 - [ ] 未把本地验证表述为生产 HA、容量、DNS 摘除或灾难恢复证明。
 
 ## 10. 阶段 5：环境交付
@@ -733,8 +742,9 @@ deploy/cluster/
 - [x] 阶段 3 按 P0/P1 和失败证据顺序实施；
 - [x] 阶段 3 修改文件已同步收敛到第 8.8 节白名单，条件提交均有证据；
 - [x] `G4-B2a/S4-D` 低风险故障子集已执行并闭环；
-- [ ] `G4-B2b/G4-B2c` 剩余故障矩阵范围是否接受；
+- [x] `G4-B2b-1` Redis 暂停/恢复已执行并闭环；
+- [ ] `G4-B2b-2/G4-B2c` 剩余故障矩阵范围是否接受；
 - [ ] 阶段 5 交付物是否足够；
-- [x] `G1/G2/G3` 已分别授权并完成；`G4-A`、`S4-B`、`G4-B1/S4-C` 与 `G4-B2a/S4-D` 已完成，`G4-B2b/G4-B2c` 未授权。
+- [x] `G1/G2/G3` 已分别授权并完成；`G4-A`、`S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D` 与 `G4-B2b-1` 已完成，`G4-B2b-2/G4-B2c` 未授权。
 
-当前 G0/G1/G2/G3、实施阶段 0 至阶段 3、`S4-A/S4-B`、`G4-B1/S4-C` 和 `G4-B2a/S4-D` 低风险子集均已通过。下一步先审核 `G4-B2a` 证据，再单独决定是否仅授权 `G4-B2b` 的 Redis 中断与恢复；未授权前不执行 Redis/PostgreSQL/数据节点中断、OOM、受控 migration 失败或其他故障矩阵操作。
+当前 G0/G1/G2/G3、实施阶段 0 至阶段 3、`S4-A/S4-B`、`G4-B1/S4-C`、`G4-B2a/S4-D` 低风险子集和 `G4-B2b-1` Redis 暂停/恢复均已通过。下一步先审核 `G4-B2b-1` 证据，再单独决定是否仅授权 `G4-B2b-2` 的 PostgreSQL 中断与恢复；未授权前不执行 PostgreSQL/数据节点中断、OOM、受控 migration 失败或其他故障矩阵操作。
