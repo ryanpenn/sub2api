@@ -144,6 +144,19 @@ multipass exec node3 -- <command>
 - 三个直连 `/health`、`/ready` 均为 200；三个叶证书 serial/指纹仍为 `6A756405F963CC3B7D3310DCAF348F5B` / `40:FD:12:CF:C3:3C:C4:B8:45:80:75:AD:1F:09:91:C1:4E:A2:5D:FA:50:C5:F1:C2:3E:5C:C1:D5:A6:F3:15:7A`；`release:verify ENV=local` 通过；
 - 已确认 `/usr/local/bin/multipass` 与 `/usr/bin/nohup` 可用，未来每个场景都必须在停止前建立 60 秒 auto-start watchdog 与退出/信号恢复 trap。
 
-审查把实际故障拆为 `G4-B2b-2b-1` node2/Redis 与 `G4-B2b-2b-2` node1/PostgreSQL，均未授权。先执行 node2，完整恢复后才能重新审核 node1。停止节点后该节点入口应不可达，不能把它误判为 `/ready=503`；正确门槛是另外两个应用 `/health=200`、`/ready=503`，两个 manager 保持 quorum/唯一 Leader，数据 service 为 `0/1` 且不漂移。完整命令、自动恢复和停止门槛见 [`GoTask-runbook.md`](./GoTask-runbook.md) 第 7.4 节。
+审查把实际故障拆为 `G4-B2b-2b-1` node2/Redis 与 `G4-B2b-2b-2` node1/PostgreSQL。node2 已执行并通过，node1 仍未授权且必须先重新审核。停止节点后该节点入口应不可达，不能把它误判为 `/ready=503`；正确门槛是另外两个应用 `/health=200`、`/ready=503`，两个 manager 保持 quorum/唯一 Leader，数据 service 的新 desired task 因唯一 placement 无可用节点而 Pending 且不漂移。不可达节点旧 task 的最后已知状态会让 `docker service ls` 汇总值滞后，不能要求精确显示 `0/1`。完整命令、自动恢复和停止门槛见 [`GoTask-runbook.md`](./GoTask-runbook.md) 第 7.4 节。
 
 该审查只为普通受控关机/原虚拟磁盘恢复做准备，不覆盖 `--force`、断电、宿主机崩溃、磁盘损坏、VM 重建、跨节点/备份恢复、自动故障转移、DNS 摘除、生产 HA 或 RPO/RTO。
+
+## G4-B2b-2b-1 node2/Redis 数据节点停止/恢复记录
+
+2026-07-27 已在普通 `multipass stop/start node2`、60 秒 auto-start watchdog 和退出/信号恢复 trap 保护下完成：
+
+- 首次窗口确认 node2 不可达时，node1/node3 `/health=200`，直连 `/ready=503` 约 2.03–3.00 秒，HTTPS `/ready=503`，node1 保持 Leader；因恢复早于 Swarm task 汇总收敛，该窗口只保留为入口证据。完成全部恢复和数据复核后，在同一授权范围内复测；
+- 复测时 node2 在 15 秒内进入 `Down/Unreachable`，node1/node3 保持 quorum；两个存活节点 `/health=200`、直连 `/ready=503` 约 3.00 秒、HTTPS 503，node2 入口不可达；Redis 新 task `qv9imdixga3m4mryny8arnu2a` 无 NODE，并明确因唯一 placement 无可用节点而 Pending，没有漂移；
+- 故障期 `docker service ls` 显示 Sub2API/Caddy `3/2`、Redis `1/1`，原因是不可达节点旧 task 保留最后已知 `Running` 且 global desired 数已变为两个可用节点；实际验收应读 task-level desired/current state、NODE、调度错误和入口状态；
+- 复测开始 35 秒时人工启动 node2，49 秒时返回，watchdog 未触发。恢复后的 Redis task/container 为 `qv9imdixga3m4mryny8arnu2a`/`9cf548417e10`，从原 AOF 加载约 0.034 秒；volume `sub2api-local_redis_data` 的创建时间、Mountpoint 和 device/inode `2049/299241` 均不变；
+- Redis 恢复 `PONG`，RDB/AOF 正常；Caddy DB 1 仍为 15 个 key，摘要仍为 `8c59bdb6c96e954ab0b28d80c55c18c09e7ad3ed57992d7231c7a67c91a72ca8`；三个证书 serial/指纹、PostgreSQL `system_identifier=7666874411637911585` 和 migration `236/236/0/0` 均不变；
+- 三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1` 和三个入口全部恢复，相关日志无 panic/fatal/corruption、新证书签发或 Redis storage error，最终 `release:verify ENV=local` 通过。
+
+该结果只证明 node2 的普通受控关机、原虚拟磁盘和原 local volume 恢复，不证明 `--force`、断电、磁盘损坏、VM 重建、跨节点/备份恢复、自动故障转移、DNS 摘除或生产 HA。
