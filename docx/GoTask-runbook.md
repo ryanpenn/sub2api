@@ -1,6 +1,6 @@
 # GoTask 发布与运维手册
 
-> 状态：G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 中断恢复、G4-B2b-2a PostgreSQL 容器暂停/恢复及 G4-B2b-2b-1 node2/Redis 数据节点停止/恢复均已通过；`ext.3` 已在三个节点运行；node1/PostgreSQL 数据节点及资源/迁移故障未授权
+> 状态：G1/G2/G3、G4-A、S4-B、G4-B1/S4-C、G4-B2a/S4-D 低风险子集、G4-B2b-1 Redis 中断恢复、G4-B2b-2a PostgreSQL 容器暂停/恢复及 G4-B2b-2b-1 node2/Redis 数据节点停止/恢复均已通过；`ext.3` 已在三个节点运行；node1/PostgreSQL 数据节点执行前只读复审已通过，实际故障及资源/迁移故障未授权
 > 适用范围：Sub2API Docker Swarm 本地 ARM64 验证与后续 AMD64 生产环境
 > 基线日期：2026-07-27（Asia/Shanghai）
 
@@ -306,7 +306,7 @@ task ops:status
 
 ### 7.4 数据节点受控停止/恢复（node2/Redis 已通过，node1/PostgreSQL 未授权）
 
-`G4-B2b-2b` 不复用普通节点 drain，也不增加 GoTask、脚本、daemon 或控制面。实际执行拆成 node2/Redis 与 node1/PostgreSQL 两次独立授权；node2 已执行并通过，node1 必须重新完成只读复审和独立授权。两次都只使用普通 `multipass stop/start`，禁止 `--force`、drain、修改 label/service spec/Secret/Config、volume 操作和同时停止第二个 manager。
+`G4-B2b-2b` 不复用普通节点 drain，也不增加 GoTask、脚本、daemon 或控制面。实际执行拆成 node2/Redis 与 node1/PostgreSQL 两次独立授权；node2 已执行并通过，node1 的只读复审已完成，但实际停止仍须独立授权。两次都只使用普通 `multipass stop/start`，禁止 `--force`、drain、修改 label/service spec/Secret/Config、volume 操作和同时停止第二个 manager。
 
 每次停止前必须在 node1 的部署副本上重新执行验证；不能直接从 macOS 工作区运行，因为本地 CA 导出门槛要求 `hostname=node1`：
 
@@ -317,7 +317,7 @@ multipass exec node1 -- sh -lc \
 
 随后记录 manager/Leader、service/task/container、数据 service placement、volume driver/Mountpoint、数据身份及三个入口。PostgreSQL 记录 `system_identifier` 和 migration `count/distinct/null/empty`；Redis 记录 `PONG`、RDB/AOF、DB 1 key-name-set 摘要，DB 0 动态 key 数不作严格相等门槛。
 
-在 macOS 宿主机先建立两层一次性恢复保护。以下模板中的目标节点必须写死为当次已授权的 `node2` 或 `node1`，不能从外部输入拼接：
+在 macOS 宿主机先建立两层一次性恢复保护。node2 的已执行模板保留如下；任何未来复测仍不得从外部输入拼接目标节点：
 
 ```bash
 target_node=node2
@@ -337,12 +337,59 @@ kill -0 "$recovery_pid"
 multipass stop node2
 ```
 
-执行 node1/PostgreSQL 子场景时，必须在单独授权后把模板中的 `target_node`、`recovery_log`、watchdog、`multipass stop` 和下方人工 `multipass start` 目标五处同时改为 `node1`；不得混用两个节点名。
-
-达到预期故障观察门槛后立即恢复，不等待 watchdog 到期：
+node1/PostgreSQL 不允许编辑 node2 模板执行。取得独立故障授权后，只能使用以下硬编码 node1 的专用命令块：
 
 ```bash
-multipass start node2
+recovery_log=/tmp/sub2api-g4-b2b-2b-node1-recovery.log
+
+recover_node1() {
+  /usr/local/bin/multipass start node1 >/dev/null 2>&1 || true
+}
+trap recover_node1 EXIT
+trap 'exit 130' INT TERM HUP
+
+/usr/bin/nohup /bin/sh -c 'sleep 60; /usr/local/bin/multipass start node1' \
+  >"$recovery_log" 2>&1 &
+recovery_pid=$!
+if ! kill -0 "$recovery_pid"; then
+  echo 'node1 recovery watchdog is not running' >&2
+  exit 1
+fi
+
+if ! /usr/local/bin/multipass stop node1; then
+  echo 'node1 stop failed; keep recovery protection active' >&2
+  exit 1
+fi
+```
+
+node1 停止后，宿主机 `sub2api-local` context 不可用。node2 没有 GoTask 部署副本或本地 CA 文件，只允许使用其原生 Docker CLI 和有界命令观察控制面：
+
+```bash
+multipass exec node2 -- sh -lc \
+  'timeout 5 docker node ls && timeout 5 docker service ps --no-trunc sub2api-local_postgres'
+```
+
+故障期从 node2 检查 node2/node3 直连 `/health`、`/ready`；HTTPS 状态可临时使用 `curl -k`，但必须同时用 `openssl s_client | openssl x509` 核对预先记录的 serial/指纹。`-k` 只用于该受控故障窗口的状态取证，不能替代执行前和恢复后的本地 CA 完整验证。
+
+达到预期故障观察门槛后立即恢复，不等待 watchdog 到期。node1 的人工恢复必须检查 `start` 返回值、Multipass 状态和来宾可执行性；任一步失败都直接 `exit`，保留 watchdog，并由 `EXIT` trap 再次尝试恢复：
+
+```bash
+if ! /usr/local/bin/multipass start node1; then
+  echo 'node1 start failed; keep watchdog and EXIT trap active' >&2
+  exit 1
+fi
+
+node1_state=$(/usr/local/bin/multipass info node1 --format csv | tail -1 | cut -d, -f2)
+if [ "$node1_state" != Running ]; then
+  echo "node1 state is $node1_state; keep recovery protection active" >&2
+  exit 1
+fi
+
+if ! /usr/local/bin/multipass exec node1 -- true; then
+  echo 'node1 guest is not executable; keep recovery protection active' >&2
+  exit 1
+fi
+
 kill "$recovery_pid" 2>/dev/null || true
 wait "$recovery_pid" 2>/dev/null || true
 trap - EXIT INT TERM HUP
@@ -351,7 +398,7 @@ unlink "$recovery_log"
 
 node2/Redis 场景由 node1 manager 观察。node2 入口不可达是预期结果；node1/node3 必须保持 quorum 与唯一 Leader，两个存活应用 `/health=200`、`/ready` 在约 3 秒内返回 503，HTTPS 使用已加载证书返回 503。Redis 的新 desired task 必须没有 NODE，并因唯一 placement 无可用节点而 Pending；两个存活节点各只保留一个 Sub2API/Caddy task。不可达节点的旧 task 可能保留最后已知 `Running`，global service 的 desired 数也会随可用节点变化，因此不得要求 `docker service ls` 精确显示 `2/3` 或 `0/1`，也不得用汇总比值推断故障节点进程仍存活。期间不得重启存活 Caddy。恢复后的 node2 Caddy 可在 Redis 已恢复后读取共享 storage，但不能据此宣称“Redis 持续不可用时 Caddy 冷启动”已通过。
 
-node1/PostgreSQL 场景开始前，必须先证明 `multipass exec node2 -- docker node ls` 可用，因为 node1 上的既有 Docker context 和 GoTask 入口在故障期不可用。node1 停止后，node2/node3 必须在 30 秒内形成 quorum 和唯一 Leader；PostgreSQL 新 desired task 必须没有 NODE，并因唯一 placement 无可用节点而 Pending，Redis 保持在 node2；两个存活应用 `/health=200`、`/ready` 在约 3 秒内返回 503。验收读取 task-level desired/current state、NODE 和调度错误，不以汇总 `REPLICAS` 比值作为 liveness。node1 恢复后不要求重新成为 Leader。
+node1/PostgreSQL 场景开始前，必须先证明 `multipass exec node2 -- timeout 5 docker node ls` 可用，因为 node1 上的既有 Docker context 和 GoTask 入口在故障期不可用。node1 停止后 30 秒内，node2/node3 必须形成 quorum 和唯一 Leader，且 PostgreSQL 新 desired task 必须没有 NODE、因唯一 placement 无可用节点而 Pending；任一条件未在同一 30 秒窗口出现即恢复并判失败。Redis 保持在 node2；两个存活应用 `/health=200`、`/ready` 在约 3 秒内返回 503。验收读取 task-level desired/current state、NODE 和调度错误，不以汇总 `REPLICAS` 比值作为 liveness。node1 恢复后不要求重新成为 Leader。
 
 每个场景恢复后，task/container ID 允许变化，但 Swarm node ID、service spec、placement、volume 名称/driver/Mountpoint 和数据身份必须不变。数据 service 应在节点启动后 120 秒内 healthy，完整集群应在 300 秒内恢复三个 manager Ready/Reachable、唯一 Leader、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1`、三个入口 200，并最终通过 `release:verify ENV=local`。
 
@@ -360,6 +407,8 @@ node1/PostgreSQL 场景开始前，必须先证明 `multipass exec node2 -- dock
 该流程只验证普通停止的受控关机和原虚拟磁盘恢复，不覆盖 `multipass stop --force`、断电、宿主机崩溃、磁盘损坏、VM 删除/重建、跨节点/备份恢复、自动故障转移、DNS 摘除、生产 HA 或 RPO/RTO。
 
 2026-07-27 的 `G4-B2b-2b-1` 实测已通过：node2 在复测开始 15 秒内进入 `Down/Unreachable`，两个存活节点 `/health=200`、直连及 HTTPS `/ready=503`，node2 入口不可达；Redis 新 task 无 NODE、因 placement 无可用节点而 Pending，未漂移。故障期汇总值为 Sub2API/Caddy `3/2`、Redis `1/1`，其中包含不可达节点旧 task 的最后已知 `Running`，因此手册已改为 task-level 验收。35 秒时人工启动、49 秒时返回，watchdog 未触发；Redis 从原 AOF 加载，原 volume、Caddy storage、证书、PostgreSQL identity/migration 均不变，最终 `release:verify ENV=local` 通过。完整证据见 [`Sub2API-MultiNode-Deployment-plan.md`](./Sub2API-MultiNode-Deployment-plan.md) 的阶段 4 记录。
+
+2026-07-27 的 node1/PostgreSQL 执行前只读复审已通过，实际故障未授权：确认 node1 当前为 Leader，宿主机 context 固定指向 node1；node2 可用 `/usr/bin/timeout` 包裹原生 Docker CLI 观察剩余控制面，但没有 GoTask 部署副本和本地 CA。复审据此增加硬编码 node1 的恢复保护、撤销保护前的三项确认、故障期证书指纹校验及 Leader/Pending 同一 30 秒门槛；没有新增脚本、任务、代码、服务或控制面。
 
 ## 8. 新增 Node4：增加第 4 个 Sub2API 副本
 

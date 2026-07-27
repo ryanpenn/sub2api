@@ -144,7 +144,7 @@ multipass exec node3 -- <command>
 - 三个直连 `/health`、`/ready` 均为 200；三个叶证书 serial/指纹仍为 `6A756405F963CC3B7D3310DCAF348F5B` / `40:FD:12:CF:C3:3C:C4:B8:45:80:75:AD:1F:09:91:C1:4E:A2:5D:FA:50:C5:F1:C2:3E:5C:C1:D5:A6:F3:15:7A`；`release:verify ENV=local` 通过；
 - 已确认 `/usr/local/bin/multipass` 与 `/usr/bin/nohup` 可用，未来每个场景都必须在停止前建立 60 秒 auto-start watchdog 与退出/信号恢复 trap。
 
-审查把实际故障拆为 `G4-B2b-2b-1` node2/Redis 与 `G4-B2b-2b-2` node1/PostgreSQL。node2 已执行并通过，node1 仍未授权且必须先重新审核。停止节点后该节点入口应不可达，不能把它误判为 `/ready=503`；正确门槛是另外两个应用 `/health=200`、`/ready=503`，两个 manager 保持 quorum/唯一 Leader，数据 service 的新 desired task 因唯一 placement 无可用节点而 Pending 且不漂移。不可达节点旧 task 的最后已知状态会让 `docker service ls` 汇总值滞后，不能要求精确显示 `0/1`。完整命令、自动恢复和停止门槛见 [`GoTask-runbook.md`](./GoTask-runbook.md) 第 7.4 节。
+审查把实际故障拆为 `G4-B2b-2b-1` node2/Redis 与 `G4-B2b-2b-2` node1/PostgreSQL。node2 已执行并通过，node1 的执行前只读复审也已通过，但实际停止仍未授权。停止节点后该节点入口应不可达，不能把它误判为 `/ready=503`；正确门槛是另外两个应用 `/health=200`、`/ready=503`，两个 manager 保持 quorum/唯一 Leader，数据 service 的新 desired task 因唯一 placement 无可用节点而 Pending 且不漂移。不可达节点旧 task 的最后已知状态会让 `docker service ls` 汇总值滞后，不能要求精确显示 `0/1`。完整命令、自动恢复和停止门槛见 [`GoTask-runbook.md`](./GoTask-runbook.md) 第 7.4 节。
 
 该审查只为普通受控关机/原虚拟磁盘恢复做准备，不覆盖 `--force`、断电、宿主机崩溃、磁盘损坏、VM 重建、跨节点/备份恢复、自动故障转移、DNS 摘除、生产 HA 或 RPO/RTO。
 
@@ -160,3 +160,16 @@ multipass exec node3 -- <command>
 - 三个 manager、Sub2API/Caddy `3/3`、PostgreSQL/Redis `1/1` 和三个入口全部恢复，相关日志无 panic/fatal/corruption、新证书签发或 Redis storage error，最终 `release:verify ENV=local` 通过。
 
 该结果只证明 node2 的普通受控关机、原虚拟磁盘和原 local volume 恢复，不证明 `--force`、断电、磁盘损坏、VM 重建、跨节点/备份恢复、自动故障转移、DNS 摘除或生产 HA。
+
+## G4-B2b-2b-2 node1/PostgreSQL 执行前只读复审
+
+2026-07-27 已完成复审，没有停止节点或服务：
+
+- 三个 manager 均为 `Ready/Active`，node1 当前为唯一 Leader；宿主机 Docker context `sub2api-local` 固定为 `ssh://ubuntu@192.168.252.2`，node1 停止后不可用；
+- node2 可使用原生 `/usr/bin/docker` 管理 Swarm，`/usr/bin/timeout`、`curl`、`openssl` 均可用；但 node2 没有 `task`、部署目录或本地 CA，因此故障期只使用有界 Docker CLI、直连入口和证书 serial/指纹取证，完整 `release:verify` 必须等 node1 恢复后执行；
+- PostgreSQL service placement 为唯一 `postgres=true` 节点及 `aarch64`，当前 task/container 为 `t4ns8vvywx85wdwon1dksg524`/`4a50cd8f4a12`。named volume `sub2api-local_postgres_data` 的创建时间、Mountpoint 与 device/inode `2049/302196` 均已记录；`pg_isready`、`system_identifier=7666874411637911585` 和 migration `236/236/0/0` 通过；
+- Redis 继续位于 node2 且 `PONG`；node2/node3 直连和 HTTPS 当前均为 200，证书 serial/指纹与既有基线一致；正确入口上的 `release:verify ENV=local` 通过；
+- node1 使用硬编码的专用 60 秒 watchdog + `EXIT/INT/TERM/HUP` trap 命令，不能编辑 node2 模板。只有 `multipass start node1` 成功、状态为 `Running` 且 `multipass exec node1 -- true` 成功后才能撤销恢复保护；
+- 未来故障期 30 秒门槛同时要求 node2/node3 形成唯一 Leader，以及 PostgreSQL 新 desired task 无 NODE、因唯一 placement 无可用节点而 Pending；任一未出现即恢复并判失败。HTTPS 临时 `curl -k` 必须同时核对预先记录的 serial/指纹，不能替代恢复后的 CA 验证。
+
+只读复审结论为通过，两个文档级阻断项已关闭；实际停止 node1 仍未授权。该复审没有新增代码、脚本、任务、服务、daemon、控制面或其他实体。
