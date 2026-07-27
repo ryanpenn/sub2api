@@ -65,3 +65,15 @@ multipass exec node3 -- <command>
 本地 Stack 以 host mode 发布 Sub2API `8080` 供同节点 Caddy 访问，因此该端口也可从 Multipass 宿主机到达。本次测试环境已明确接受该安全例外；生产准入前必须通过防火墙或等价网络约束禁止绕过 Caddy。
 
 该基线只用于同一台 macOS 宿主机上的编排验证，不证明跨物理故障域高可用。
+
+## S4-B 非破坏性专项记录
+
+2026-07-27 在不停止 task、节点、PostgreSQL 或 Redis，不制造 OOM、失败发布或实际回滚的边界内完成以下验证：
+
+- node1 登录签发的 access JWT 可在三个节点使用；refresh token 在 node2 轮换后，新 access token 可在 node3 使用，旧 refresh token 被拒绝；node1 注销后，新 refresh token 在 node2 也被拒绝；
+- 三个节点返回相同用户、分组、API Key 列表、`gpt-4o` 模型价格和版本 `0.1.165-ext.2`；一个临时 API Key 从 node1 创建后可在 node2/node3 读取，从 node2 删除后三个节点均不再可用，测试实体已清理；
+- 三个 Caddy 的管理 QPS WebSocket 均完成 `101 Switching Protocols`；未携带 API Key 的 `/v1/models`、`/v1/responses`、`/v1/messages` 在三个节点返回一致 401；
+- 当前正式数据中没有 Provider 账户、Provider API Key 或 Scheduled Test plan，因此 OAuth、SSE/OpenAI WebSocket、生图 limiter、Batch job lock、Scheduled Test、expiry、计费和 migration 使用协议级、race 或隔离 integration harness 验证，没有为了测试增加真实 Provider 配置或制造费用；
+- 正式数据库的 `schema_migrations` 为 236 条记录、236 个唯一 filename、0 个空 checksum、0 组重复 filename；三个节点 TOTP 状态均为 disabled，近 500 行 Sub2API 日志的 password、Bearer、refresh token、JWT/TOTP secret 等敏感模式命中为 0。
+
+该记录只证明 S4-B 非破坏性专项。最小滚动排空、三个正式 task 同时替换、双协调后端同时故障、TOTP 启用后的跨节点行为、实际回滚、TLS 恢复和故障矩阵均未执行，仍受 `G4-B` 或后续单独授权约束。

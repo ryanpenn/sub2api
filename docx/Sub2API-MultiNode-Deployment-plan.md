@@ -1,6 +1,6 @@
 # Sub2API 多节点部署实施计划
 
-> 状态：`G0/G1/G2/G3` 已通过；`G4-A` 三副本启用已完成，`G4-B` 故障演练未授权
+> 状态：`G0/G1/G2/G3` 已通过；`G4-A` 三副本启用及 `S4-B` 非破坏性专项已完成，`G4-B` 故障演练未授权
 > 创建日期：2026-07-26
 > 适用范围：三个 Multipass ARM64 节点的本地 Docker Swarm 验证，以及 AMD64 生产制品与配置基线
 > 方案来源：[`Sub2API-MultiNode-Deployment.md`](./Sub2API-MultiNode-Deployment.md)
@@ -11,7 +11,7 @@
 
 本文把已经完成的多节点部署方案拆解为可执行、可验证、可停止和可回滚的实施步骤。阶段编号严格沿用方案文档第 7 节：阶段 0 至阶段 5。
 
-当前已完成 `G1` 仓库侧实施、`G2` 首版制品发布、`G3` 本地单副本基线、阶段 3 多实例前置收敛和 `G4-A` 三副本启用。后续仍不执行下列操作：
+当前已完成 `G1` 仓库侧实施、`G2` 首版制品发布、`G3` 本地单副本基线、阶段 3 多实例前置收敛、`G4-A` 三副本启用和 `S4-B` 非破坏性专项。后续仍不执行下列操作：
 
 - 不继续扩大阶段 3 运行时代码范围；新增修补仍须先有失败证据并重新审核白名单；
 - 不执行 `G4-B` 的 task kill、节点/依赖中断、OOM、受控 migration 失败、失败暂停或实际回滚演练；
@@ -91,7 +91,7 @@ flowchart LR
 | 1. 节点与基础设施基线 | 已完成 | `G1`；涉及 GHCR/节点时再分别取得 `G2/G3` | 发布链、制品、配置骨架和三 manager 基线通过 |
 | 2. 数据服务与单副本基线 | 已完成 | 阶段 1 通过且已取得 `G3` | PostgreSQL/Redis、单次 bootstrap、单副本与本机 Caddy 基线通过 |
 | 3. 多实例前置收敛 | 已完成 | 阶段 2 通过且代码修补范围再次确认 | 必要 P0 修补、进程级测试、候选制品和三进程冷启动满足门槛；未启用 `node2`/`node3` 应用副本 |
-| 4. 三副本与故障演练 | 进行中（`S4-A` 已完成） | 阶段 3 通过；三副本启用和故障演练分别取得 `G4-A`/`G4-B` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
+| 4. 三副本与故障演练 | 进行中（`S4-A` 与 `S4-B` 非破坏性专项已完成） | 阶段 3 通过；三副本启用和故障演练分别取得 `G4-A`/`G4-B` | 三副本、TLS、滚动更新、回滚和故障矩阵通过 |
 | 5. 环境交付 | 未开始 | 阶段 4 通过 | 交付物、限制和验收报告完成并取得 `G5` |
 
 ## 5. 阶段 0：需求冻结与架构决策
@@ -529,14 +529,24 @@ deploy/cluster/
 
 ### 9.2 S4-B：多实例功能专项
 
-- [ ] 管理端、用户端和核心 API；
-- [ ] HTTP、SSE、WebSocket 和最小滚动排空；精确 turn-aware 排空不作为第一期门槛；
-- [ ] 所有 OAuth provider 的“节点 A 发起、节点 B 回调”、TTL 和一次性消费；无真实账号时用协议级 stub/mock；
-- [ ] 对本环境实际启用且确认高内存的生图入口逐项验证 limiter；同步/异步复用路径不重复计数，Batch 继续验证既有 worker/job lock；
-- [ ] 共享账户、Key、额度、调度、计费和模型价格；
-- [ ] Scheduled Test 重复执行/锁回退/双协调后端不可用时跳过；Account/Proxy expiry 只验证既有安全并行语义；
-- [ ] 三个真实 Swarm 副本同时启动下的 migration 并发、checksum、超时和恢复门槛；
-- [ ] 三个正式副本引用同一 `app-config` Secret object ID，跨节点 JWT/TOTP 行为一致且日志不输出 Secret。
+- [x] 三个节点的管理端、用户认证、共享只读状态和核心 API 入口一致；当前无 Provider 账户，不把未发起的真实上游请求记为通过；
+- [x] 普通 HTTP、管理 WebSocket 和 SSE/OpenAI WebSocket 协议级行为通过；最小滚动排空的实机部分保留到 `S4-C`，精确 turn-aware 排空不作为第一期门槛；
+- [x] 所有 OAuth provider 的跨实例读取、TTL、state 校验和一次性消费已使用协议级 stub/mock 验证，符合无真实账号时的既定验收方式；
+- [x] 已确认高内存的生图入口逐项通过现有 limiter 定向测试；同步/异步复用路径未重复计数，Batch 既有 worker/job lock 测试通过；
+- [x] 共享用户与临时 Key 跨节点增删可见，模型价格一致；账户/额度/调度/计费在无 Provider 实体前提下使用既有定向与隔离集成测试验证；
+- [x] Scheduled Test 单 leader、Redis lock、PostgreSQL fallback 代码路径及 Account/Proxy expiry 既有安全并行语义通过；双协调后端同时故障的实机跳过行为保留到 `G4-B`；
+- [x] 隔离 PostgreSQL integration harness 的 migration 并发串行、幂等、checksum 与 schema 最新性通过；三个正式 Swarm task 的受控同时重启未执行，保留到 `G4-B`；
+- [x] 三个正式副本引用同一 `app-config` Secret object ID，跨节点 JWT 签发、轮换和撤销一致，敏感日志扫描为 0；当前管理员未启用 TOTP，未虚构跨节点 TOTP 实机结果。
+
+非破坏性实施记录（2026-07-27）：
+
+- 在 node1 登录后，同一 access JWT 可在 node1/node2/node3 调用 `/api/v1/auth/me`；refresh token 在 node2 轮换后，新 access token 可在 node3 使用，旧 refresh token 被 node3 拒绝；随后在 node1 注销，新 refresh token 被 node2 拒绝。该流程验证共享认证状态，不在文档记录测试管理员密码或 token；
+- 三个节点返回相同用户、API Key 列表、分组、`gpt-4o` 模型价格和完整版本 `0.1.165-ext.2`。为验证写后跨节点可见性，仅在 node1 创建一个额度为 1 的临时 API Key：node2/node3 均可见；从 node2 删除后 node1 返回 404、node3 列表恢复为 0，测试实体已清理；
+- 三个 Caddy 入口的管理 QPS WebSocket 均完成 `101 Switching Protocols`。未携带 API Key 访问 `/v1/models`、`/v1/responses`、`/v1/messages` 时，三个入口返回一致的 401，证明请求进入本机应用入口；本轮没有 Provider 账户、Provider API Key 或 Scheduled Test plan，因此未制造真实模型调用、外部费用或额外业务实体；
+- `go test ./extends/... -count=1`、handler/service/OAuth 定向测试和相关 `-race` 测试通过，覆盖跨实例 OAuth 一次性消费、readiness/WebSocket 生命周期、SSE 错误边界、图片 limiter、Batch job lock 与 Scheduled Test 单 leader；带 `unit` tag 的 Gemini native 图片和 Batch worker 测试通过；
+- repository 隔离 integration harness 通过 migration 并发/幂等、Proxy expiry 与计费去重测试；正式共享数据库保持 236 条 migration、236 个唯一 filename、0 个空 checksum、0 组重复 filename，检查过程未修改 migration 或业务数据；
+- 三个节点的 TOTP 状态均为 `enabled=false`；近 500 行正式 Sub2API 日志对 password、Bearer、refresh token、JWT/TOTP secret 等敏感模式扫描命中 0。正式 wiring 始终注入 Redis 与 PostgreSQL 两个协调后端，Redis error 会回退 PostgreSQL，数据库连接/查询失败返回未获锁并跳过；双后端同时故障仍需 `G4-B` 实机证明；
+- 结论：`S4-B` 的非破坏性专项通过。仍未关闭的项目只有明确属于 `S4-C/S4-D` 或需要受控中断的实机项：最小滚动排空、三个正式 task 同时替换、双协调后端故障、真实回滚和故障矩阵。当前不得据此把阶段 4 或 `G4-B` 标记为通过。
 
 ### 9.3 S4-C：滚动更新与回滚
 
@@ -703,6 +713,6 @@ deploy/cluster/
 - [x] 阶段 3 修改文件已同步收敛到第 8.8 节白名单，条件提交均有证据；
 - [ ] `G4-B` 阶段 4 故障注入范围是否接受；
 - [ ] 阶段 5 交付物是否足够；
-- [x] `G1/G2/G3` 已分别授权并完成；`G4-A` 已完成，`G4-B` 未授权。
+- [x] `G1/G2/G3` 已分别授权并完成；`G4-A` 与 `S4-B` 非破坏性专项已完成，`G4-B` 未授权。
 
-当前 G0/G1/G2/G3、实施阶段 0 至阶段 3 和 `S4-A` 均已通过。下一步先审核本节三副本启用证据，再单独决定是否授权 `G4-B`；未授权前不执行 task kill、节点/依赖中断、OOM、失败暂停、实际回滚或其他故障注入。
+当前 G0/G1/G2/G3、实施阶段 0 至阶段 3、`S4-A` 和 `S4-B` 非破坏性专项均已通过。下一步先审核 `S4-B` 证据及其保留项；建议再把 `G4-B` 拆为“`S4-C` 受控滚动/暂停/回滚”与“`S4-D` 节点、依赖、OOM 故障矩阵”两个独立授权，避免一次扩大破坏性范围。未取得对应授权前不执行 task kill、节点/依赖中断、OOM、失败暂停、实际回滚或其他故障注入。

@@ -1,10 +1,10 @@
 # Sub2API 多节点部署方案
 
-> 状态：本地验证方案设计与阶段 0 已完成，G1/G2/G3 已通过，G4-A 三副本启用已完成，G4-B 故障演练未授权；生产容量细项与生产监控目标按生产准入门槛后续补齐
+> 状态：本地验证方案设计与阶段 0 已完成，G1/G2/G3 已通过，G4-A 三副本启用及 S4-B 非破坏性专项已完成，G4-B 故障演练未授权；生产容量细项与生产监控目标按生产准入门槛后续补齐
 > 创建日期：2026-07-26  
 > 更新日期：2026-07-27
 > 节点信息来源：[`Multipass-Nodes.md`](./Multipass-Nodes.md)  
-> 当前边界：G1 已生成发布链和 `deploy/cluster` 骨架，G2 已发布 private GHCR 首版双架构制品，G3 已完成三 manager、共享 PostgreSQL/Redis、一次性 bootstrap 与 node1 单副本 TLS 基线；阶段 3 多实例前置收敛及 `v0.1.165-ext.2` 本地候选验证已通过，G4-A 已把正式 Sub2API/Caddy 扩展为三节点 `3/3`；当前不执行 G4-B 故障注入、生产部署、数据迁移或切流
+> 当前边界：G1 已生成发布链和 `deploy/cluster` 骨架，G2 已发布 private GHCR 首版双架构制品，G3 已完成三 manager、共享 PostgreSQL/Redis、一次性 bootstrap 与 node1 单副本 TLS 基线；阶段 3 多实例前置收敛及 `v0.1.165-ext.2` 本地候选验证已通过，G4-A 已把正式 Sub2API/Caddy 扩展为三节点 `3/3`，S4-B 已完成不引入 Provider/故障的非破坏性专项；当前不执行 G4-B 故障注入、生产部署、数据迁移或切流
 
 ## 1. 文档目的
 
@@ -1299,7 +1299,9 @@ task ops:node-status
 
 ### 阶段 4：三副本与故障演练
 
-2026-07-27 已完成获授权的 G4-A：node1 先通过 GoTask 从 `ext.1` 更新到 `ext.2`，随后固定 ARM64 归档分发到三个节点，node2/node3 依次添加应用与入口 label。最终 Sub2API/Caddy 均为 `3/3` 且每节点一个 task，三个 `https://sub2api.test/ready` 均通过同一 Local CA 返回 200，叶证书 serial/指纹一致，正式容器 image ID、app-config Secret、模型价格 Config 和 Caddyfile Config 均一致。PostgreSQL/Redis 保持 `1/1`。该结果只完成三副本启用与非破坏性基线；故障注入、失败暂停、实际回滚、TLS 续期/恢复、功能专项和容量专项仍需 G4-B 或对应后续授权。
+2026-07-27 已完成获授权的 G4-A：node1 先通过 GoTask 从 `ext.1` 更新到 `ext.2`，随后固定 ARM64 归档分发到三个节点，node2/node3 依次添加应用与入口 label。最终 Sub2API/Caddy 均为 `3/3` 且每节点一个 task，三个 `https://sub2api.test/ready` 均通过同一 Local CA 返回 200，叶证书 serial/指纹一致，正式容器 image ID、app-config Secret、模型价格 Config 和 Caddyfile Config 均一致。PostgreSQL/Redis 保持 `1/1`。
+
+同日完成 S4-B 非破坏性专项：node1 签发的 JWT 可跨 node2/node3 使用，refresh token 跨节点轮换、旧 token 拒绝和注销后撤销均通过；一个临时 API Key 在三个节点间写后可见并已删除；三个节点的用户、分组、模型价格、版本和管理 WebSocket 一致。OAuth、SSE/OpenAI WebSocket、生图 limiter、Batch lock、Scheduled Test、Account/Proxy expiry、计费和 migration 使用既有协议级、race 或隔离 integration harness 验证，没有为凑实机用例新增 Provider、Scheduled Test plan、业务实体或外部费用。正式数据库 migration 保持 `236/236` 唯一、零空 checksum、零重复 filename，敏感日志扫描命中 0。管理员 TOTP 当前未启用；最小滚动排空、三个正式 task 同时替换、双协调后端同时故障、实际回滚、TLS 续期/恢复和故障矩阵仍需后续授权，不能由本轮结果推定通过。
 
 输出：
 
@@ -1501,7 +1503,7 @@ task ops:node-status
 32. **本地可观测性（已确认）**：第一期不部署 Prometheus/Grafana/Loki 等常驻组件；使用 Caddy JSON access log、Sub2API 日志、Swarm/容器状态、cgroup/Docker 资源数据和 PostgreSQL/Redis 原生查询，以 `request_id + node + replica` 关联链路，由 GoTask 提供只读状态、日志和采样命令并形成验收记录。生产指标后端、日志集中化、保留期、告警阈值、值班和升级流程纳入生产准入前的“容量与可观测性补充方案”，当前不预设技术选型。
 33. **Swarm 节点角色（已确认）**：`node1`、`node2`、`node3` 固定作为 manager 并保留 worker 能力，以维持三个 manager 的 quorum 并演练单 manager 故障；后续容量扩展节点全部只作为 worker 加入，不把 manager 扩展到 3 个以上。原 manager 永久失效时从合格 worker 中晋升替代节点，只恢复到三个 manager。
 34. **实施产物（已完成 G3）**：ARM64/AMD64 GHCR 平台 digest、本地 ARM64 source/node image ID 与归档 SHA-256 均已回填；发布 tag、fork commit、构建输入、镜像身份和 workflow run 可追溯。
-35. **当前授权**：本地设计与 G1/G2/G3 已完成并通过，G4-A 三副本启用已完成；G4-A 不隐含 G4-B，当前不得执行故障注入、失败暂停或实际回滚。
+35. **当前授权**：本地设计与 G1/G2/G3 已完成并通过，G4-A 三副本启用及 S4-B 非破坏性专项已完成；G4-A/S4-B 不隐含 G4-B，当前不得执行故障注入、失败暂停或实际回滚。
 
 ## 10. 计划产物
 
@@ -1572,6 +1574,7 @@ task ops:node-status
 | 2026-07-26 | 分离 liveness/readiness 并增加排空 | 已确认 | `/health` 保留，ext 增加 `/ready` 和进程内 draining；退出窗口可配置并与 Swarm `stop_grace_period` 对齐 |
 | 2026-07-27 | 完成阶段 3 多实例前置收敛 | 已通过 | Redis OAuth SessionStore、启动槽清理、`/ready`、40 秒排空、WebSocket 1012、两个已证实图片 limiter 遗漏及 Scheduled Test leader lock 已完成；`ext.2` 候选和三进程全新数据库 bootstrap 已验证；阶段 3 退出时正式 service 未更新，后续由 G4-A 单独完成 |
 | 2026-07-27 | 完成 G4-A 三副本启用 | 已通过 | 正式 service 更新为 `ext.2`，固定归档装载到三个节点，Sub2API/Caddy 均为 `3/3`；逐节点 `/ready`、相同 TLS 证书、固定 image ID 和共享 Config/Secret object ID 已验证；未执行 G4-B 故障演练 |
+| 2026-07-27 | 完成 S4-B 非破坏性专项 | 已通过（保留授权边界） | 跨节点 JWT/refresh/logout、临时 Key 写后可见、共享只读状态和管理 WebSocket 实机通过；OAuth/SSE/图片/Batch/Scheduled Test/expiry/计费/migration 的协议级、race 或隔离集成测试通过；未执行滚动排空、正式三 task 同时替换、双依赖故障、TOTP 启用或实际回滚 |
 | 2026-07-26 | WebSocket 采用进程内登记与到期重连 | 已确认第一期最小范围 | draining 拒绝新 upgrade；已有连接可继续到窗口结束并在到期发送 `1012 Service Restart`；第一期不识别当前/new turn，不迁移连接，不使用 Redis 或新增实体 |
 | 2026-07-26 | WebSocket 连接绑定状态保持进程内 | 已确认 | 重连建立新连接，不跨副本续接未完成 turn；仅确需跨请求/副本读取的状态复用现有 Redis，不新增实体 |
 | 2026-07-26 | 保留应用启动 migration 并由 PostgreSQL 锁串行化 | 已确认 | 不新增 migration Job/ext；三个副本可同时启动但不能同时执行 SQL；失败或超时副本不进入 ready，具体超时、`*_notx.sql` 恢复和 forward-only 回滚门槛见第 6.4.1 节 |
